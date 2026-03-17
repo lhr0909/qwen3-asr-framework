@@ -45,6 +45,7 @@ find_package(Threads REQUIRED)
 set(Q3ASR_SOURCES
     src/audio_encoder.cpp
     src/decoder_llama.cpp
+    src/forced_aligner.cpp
     src/gguf_loader.cpp
     src/mel_spectrogram.cpp
     src/q3asr.cpp
@@ -86,6 +87,9 @@ if(Q3ASR_BUILD_TESTS)
     add_executable(q3asr-smoke-test tests/smoke_test.cpp)
     target_link_libraries(q3asr-smoke-test PRIVATE q3asr)
 
+    add_executable(q3asr-aligner-test tests/aligner_test.cpp)
+    target_link_libraries(q3asr-aligner-test PRIVATE q3asr)
+
     set(
         Q3ASR_TEST_TEXT_MODEL
         "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/Qwen3-ASR-1.7B-text-Q8_0.gguf"
@@ -109,6 +113,12 @@ if(Q3ASR_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/testdata/q3asr-input.wav"
         CACHE FILEPATH
         "Optional English regression wav file for parity checks"
+    )
+    set(
+        Q3ASR_TEST_ALIGNER_MODEL
+        "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/qwen3-forced-aligner-0.6b-f16.gguf"
+        CACHE FILEPATH
+        "Default forced aligner model for alignment regressions"
     )
 
     if(
@@ -134,6 +144,54 @@ if(Q3ASR_BUILD_TESTS)
                     --audio "${Q3ASR_TEST_AUDIO_ENGLISH}"
                     --expect-language "English"
                     --expect-substring "/r/apple"
+            )
+
+            add_test(
+                NAME q3asr-streaming-regression
+                COMMAND q3asr-smoke-test
+                    --text-model "${Q3ASR_TEST_TEXT_MODEL}"
+                    --mmproj-model "${Q3ASR_TEST_MMPROJ_MODEL}"
+                    --audio "${Q3ASR_TEST_AUDIO_ENGLISH}"
+                    --expect-language "English"
+                    --expect-substring "/r/apple"
+                    --capture-stream
+                    --expect-stream-calls-at-least 2
+                    --expect-stream-equals-raw
+            )
+        endif()
+
+        if(
+            EXISTS "${Q3ASR_TEST_ALIGNER_MODEL}" AND
+            EXISTS "${Q3ASR_TEST_AUDIO_ENGLISH}"
+        )
+            add_test(
+                NAME q3asr-aligner-english
+                COMMAND q3asr-aligner-test
+                    --aligner-model "${Q3ASR_TEST_ALIGNER_MODEL}"
+                    --audio "${Q3ASR_TEST_AUDIO_ENGLISH}"
+                    --text "You can apparently promote on Sundays on /r/apple on Reddit."
+                    --language "English"
+                    --expect-count 10
+                    --expect-item "rapple"
+                    --expect-first "You"
+                    --expect-last "Reddit"
+            )
+        endif()
+
+        if(
+            EXISTS "${Q3ASR_TEST_ALIGNER_MODEL}" AND
+            EXISTS "${Q3ASR_TEST_AUDIO}"
+        )
+            add_test(
+                NAME q3asr-aligner-chinese
+                COMMAND q3asr-aligner-test
+                    --aligner-model "${Q3ASR_TEST_ALIGNER_MODEL}"
+                    --audio "${Q3ASR_TEST_AUDIO}"
+                    --text "甚至出现交易几乎停滞的情况。"
+                    --language "Chinese"
+                    --expect-count 13
+                    --expect-first "甚"
+                    --expect-last "况"
             )
         endif()
     else()

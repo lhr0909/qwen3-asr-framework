@@ -14,6 +14,70 @@ bool llama_verbose_enabled() {
     return env != nullptr && env[0] != '\0' && std::strcmp(env, "0") != 0;
 }
 
+bool contains_replacement_char(const std::string & text) {
+    return text.find("\xEF\xBF\xBD") != std::string::npos;
+}
+
+bool is_valid_utf8(const std::string & text) {
+    const unsigned char * s = reinterpret_cast<const unsigned char *>(text.data());
+    const size_t n = text.size();
+    size_t i = 0;
+
+    while (i < n) {
+        const unsigned char c = s[i];
+        size_t need = 0;
+
+        if ((c & 0x80u) == 0) {
+            ++i;
+            continue;
+        } else if ((c & 0xE0u) == 0xC0u) {
+            need = 1;
+            if (c < 0xC2u) {
+                return false;
+            }
+        } else if ((c & 0xF0u) == 0xE0u) {
+            need = 2;
+        } else if ((c & 0xF8u) == 0xF0u) {
+            need = 3;
+            if (c > 0xF4u) {
+                return false;
+            }
+        } else {
+            return false;
+        }
+
+        if (i + need >= n) {
+            return false;
+        }
+
+        for (size_t j = 1; j <= need; ++j) {
+            if ((s[i + j] & 0xC0u) != 0x80u) {
+                return false;
+            }
+        }
+
+        if (need == 2) {
+            if (c == 0xE0u && s[i + 1] < 0xA0u) {
+                return false;
+            }
+            if (c == 0xEDu && s[i + 1] >= 0xA0u) {
+                return false;
+            }
+        } else if (need == 3) {
+            if (c == 0xF0u && s[i + 1] < 0x90u) {
+                return false;
+            }
+            if (c == 0xF4u && s[i + 1] >= 0x90u) {
+                return false;
+            }
+        }
+
+        i += need + 1;
+    }
+
+    return true;
+}
+
 void llama_log_quiet(ggml_log_level level, const char * text, void * /* user_data */) {
     (void) level;
     (void) text;
@@ -157,6 +221,12 @@ bool LlamaDecoder::decode_audio_embeddings(
         }
 
         generated_tokens.push_back(token);
+        if (params.raw_text_callback) {
+            const std::string current = detokenize(generated_tokens);
+            if (is_valid_utf8(current) && !contains_replacement_char(current)) {
+                params.raw_text_callback(current);
+            }
+        }
         if (!decode_token_batch(ctx, &token, 1, true, n_past)) {
             llama_free(ctx);
             return false;

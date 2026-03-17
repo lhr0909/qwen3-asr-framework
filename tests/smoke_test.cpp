@@ -1,14 +1,37 @@
 #include "q3asr.h"
 
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <string>
+
+namespace {
+
+struct StreamCapture {
+    int call_count = 0;
+    std::string last_raw;
+};
+
+void capture_stream_callback(const char * raw_text, void * user_data) {
+    auto * capture = static_cast<StreamCapture *>(user_data);
+    if (capture == nullptr) {
+        return;
+    }
+
+    ++capture->call_count;
+    capture->last_raw = raw_text != nullptr ? raw_text : "";
+}
+
+} // namespace
 
 int main(int argc, char ** argv) {
     q3asr_context_params ctx_params = q3asr_context_default_params();
     std::string audio_path;
     std::string expect_substring;
     std::string expect_language;
+    int expect_stream_calls_at_least = 0;
+    bool capture_stream = false;
+    bool expect_stream_equals_raw = false;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--text-model") == 0 && i + 1 < argc) {
@@ -21,6 +44,12 @@ int main(int argc, char ** argv) {
             expect_substring = argv[++i];
         } else if (std::strcmp(argv[i], "--expect-language") == 0 && i + 1 < argc) {
             expect_language = argv[++i];
+        } else if (std::strcmp(argv[i], "--capture-stream") == 0) {
+            capture_stream = true;
+        } else if (std::strcmp(argv[i], "--expect-stream-equals-raw") == 0) {
+            expect_stream_equals_raw = true;
+        } else if (std::strcmp(argv[i], "--expect-stream-calls-at-least") == 0 && i + 1 < argc) {
+            expect_stream_calls_at_least = std::atoi(argv[++i]);
         } else {
             std::cerr << "Unknown or incomplete argument: " << argv[i] << "\n";
             return 1;
@@ -46,6 +75,11 @@ int main(int argc, char ** argv) {
 
     q3asr_transcribe_result result = {};
     q3asr_transcribe_params tx_params = q3asr_transcribe_default_params();
+    StreamCapture stream_capture;
+    if (capture_stream || expect_stream_calls_at_least > 0) {
+        tx_params.raw_text_callback = capture_stream_callback;
+        tx_params.raw_text_callback_user_data = &stream_capture;
+    }
 
     if (!q3asr_transcribe_wav_file(ctx, audio_path.c_str(), &tx_params, &result)) {
         std::cerr << q3asr_context_last_error(ctx) << "\n";
@@ -60,6 +94,10 @@ int main(int argc, char ** argv) {
     std::cout << "raw=" << raw << "\n";
     std::cout << "language=" << language << "\n";
     std::cout << "text=" << text << "\n";
+    if (tx_params.raw_text_callback != nullptr) {
+        std::cout << "stream_calls=" << stream_capture.call_count << "\n";
+        std::cout << "stream_raw=" << stream_capture.last_raw << "\n";
+    }
 
     bool ok = !text.empty();
     if (ok && !expect_substring.empty()) {
@@ -67,6 +105,12 @@ int main(int argc, char ** argv) {
     }
     if (ok && !expect_language.empty()) {
         ok = language == expect_language;
+    }
+    if (ok && expect_stream_calls_at_least > 0) {
+        ok = stream_capture.call_count >= expect_stream_calls_at_least;
+    }
+    if (ok && expect_stream_equals_raw) {
+        ok = stream_capture.last_raw == raw;
     }
 
     q3asr_transcribe_result_clear(&result);

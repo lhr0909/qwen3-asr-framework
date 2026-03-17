@@ -16,10 +16,14 @@ This is not a finished product yet. The encoder and decoder path runs end to end
 ## Current State
 
 - One-shot transcription works with local split GGUF weights.
+- Raw decoder text can now be streamed token-by-token through the C API callback and the CLI `--stream-raw` mode.
 - The public API supports:
   - `q3asr_transcribe_wav_file()`
   - `q3asr_transcribe_pcm_f32()`
+  - `q3asr_align_wav_file()`
+  - `q3asr_align_pcm_f32()`
 - The CLI supports direct wav-file transcription through `q3asr-cli`.
+- The CLI also supports direct forced alignment with a local aligner GGUF through `--aligner-model` + `--align-text`.
 - Real-model tests are wired through `ctest` when the expected local assets exist.
 - The English parity regression sample currently matches both:
   - the sibling patched `llama.cpp` runtime in `../qwen3-asr-llamacpp`
@@ -33,7 +37,9 @@ Current limitations:
 
 - input must already be `16 kHz`
 - wav parsing supports PCM and IEEE-float wav, but there is no resampler yet
-- the library is one-shot only, not streaming/session-based yet
+- the current "streaming" support is decoder token streaming only, not a full push-audio session API
+- there is no active long-audio chunking/session path right now; very long files are deferred until a better design lands
+- the forced aligner currently targets Python parity first for English and Chinese; Japanese tokenization is still a best-effort fallback, not a `nagisa`-equivalent port
 
 ## Architecture
 
@@ -60,6 +66,12 @@ The runtime is split into four main pieces:
    - Connects wav loading, mel computation, encoder execution, decoder execution, and transcript parsing.
    - Parses raw model output such as `language English<asr_text>...` into structured fields.
 
+5. `src/forced_aligner.cpp`
+   - Loads the local forced-aligner GGUF directly through ggml/GGUF metadata.
+   - Reuses the Qwen3-ASR mel front end.
+   - Runs the separate audio encoder + classifier-head decoder graph for timestamp-class prediction.
+   - Applies Python-style timestamp repair and returns normalized aligned units with timestamps.
+
 ## Repository Layout
 
 - `include/q3asr.h`: public C API
@@ -81,11 +93,13 @@ Build requirements:
 - local GGUF model files, typically:
   - `models/gguf/Qwen3-ASR-1.7B-text-Q8_0.gguf`
   - `models/gguf/Qwen3-ASR-1.7B-mmproj.gguf`
+  - `models/gguf/qwen3-forced-aligner-0.6b-f16.gguf`
 
 Reference model assets now live in:
 
 - `../Qwen3-ASR/models/Qwen3-ASR-1.7B`
 - `../Qwen3-ASR/models/Qwen3-ASR-0.6B`
+- `../Qwen3-ASR/models/Qwen3-ForcedAligner-0.6B`
 
 Apple-specific notes:
 
@@ -134,7 +148,24 @@ Useful CLI flags:
 - `--batch <n>`: decoder batch size
 - `--ctx <n>`: decoder context size
 - `--no-gpu`: disable GPU offload
+- `--stream-raw`: stream raw decoder text as it is generated
 - `--show-raw`: print raw decoder output plus parsed fields
+
+Forced-align example:
+
+```sh
+./build/q3asr-cli \
+  --aligner-model models/gguf/qwen3-forced-aligner-0.6b-f16.gguf \
+  --audio testdata/q3asr-input.wav \
+  --align-text "You can apparently promote on Sundays on /r/apple on Reddit." \
+  --language English
+```
+
+Aligner-specific CLI flags:
+
+- `--aligner-model <path>`: local forced-aligner GGUF
+- `--align-text <text>`: transcript text to align against the audio
+- `--korean-dict <path>`: optional Korean dictionary file for the aligner tokenizer
 
 Audio input rules today:
 
@@ -173,6 +204,23 @@ q3asr_transcribe_result_clear(&result);
 q3asr_context_destroy(ctx);
 ```
 
+Forced-align flow:
+
+```c
+q3asr_aligner_context_params align_params = q3asr_aligner_context_default_params();
+align_params.aligner_model_path = ".../qwen3-forced-aligner-0.6b-f16.gguf";
+
+q3asr_aligner_context * aligner = q3asr_aligner_context_create(&align_params);
+
+q3asr_alignment_result alignment = {0};
+if (q3asr_align_wav_file(aligner, "input.wav", "aligned text", "English", &alignment)) {
+    /* alignment.items[i].text / start_time / end_time */
+}
+
+q3asr_alignment_result_clear(&alignment);
+q3asr_aligner_context_destroy(aligner);
+```
+
 ## Run Tests
 
 Build and run:
@@ -191,6 +239,14 @@ The current tests are asset-gated:
 - `q3asr-english-regression`
   - Registers only when `testdata/q3asr-input.wav` exists locally.
   - Verifies detected language `English` and the `/r/apple` substring.
+- `q3asr-streaming-regression`
+  - Verifies the raw-text callback fires multiple times on the English regression sample and that the last streamed raw text equals the final raw transcript.
+- `q3asr-aligner-english`
+  - Uses the local forced-aligner GGUF and `testdata/q3asr-input.wav`.
+  - Verifies the current Python-parity English unitization: `10` items including `rapple`.
+- `q3asr-aligner-chinese`
+  - Uses the local forced-aligner GGUF and `testdata/asr_zh.wav`.
+  - Verifies the current Python-parity Chinese character-level unitization: `13` items from `甚` through `况`.
 
 ## Reference Implementations
 
@@ -211,8 +267,12 @@ See `AGENTS.md` for the preferred validation workflow and project-specific const
 ## Notes And Known Issues
 
 - `clip.audio.conv_chunksize` in the mmproj GGUF is not the encoder time-axis split. The active code correctly derives the time chunk from `n_window * 2`.
+- Long-audio/session support was intentionally rolled back for now. The current library path is one-shot transcription plus decoder token streaming only.
+- The forced aligner now lives in this repo as a separate subsystem, but it is not yet tied into any long-audio overlap-merging policy.
+- The current forced-aligner tokenizer path is designed around Python parity for English/Chinese/Korean normalization, but Japanese is still a fallback heuristic rather than a port of Python's `nagisa` segmentation.
+- The Python vLLM streaming path is still the reference for future session behavior: it re-feeds accumulated audio and appends a rollback-trimmed text prefix on each step.
 - Compatibility symlinks were left in the sibling reference repos after artifact migration, but this repo is now the canonical home for the GGUF models, test wavs, and the upstream `llama.cpp` checkout.
-- Long-audio behavior, streaming/session support, and resampling are still pending.
+- Long-audio behavior, full streaming/session support, and resampling are still pending.
 
 ## Worklog
 

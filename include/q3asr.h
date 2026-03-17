@@ -8,6 +8,8 @@ extern "C" {
 #endif
 
 typedef struct q3asr_context q3asr_context;
+typedef struct q3asr_aligner_context q3asr_aligner_context;
+typedef void (*q3asr_raw_stream_callback)(const char * raw_text, void * user_data);
 
 typedef struct {
     const char * text_model_path;
@@ -20,8 +22,17 @@ typedef struct {
 } q3asr_context_params;
 
 typedef struct {
+    const char * aligner_model_path;
+    const char * korean_dict_path;
+    int use_gpu;
+    int n_threads;
+} q3asr_aligner_context_params;
+
+typedef struct {
     const char * language_hint;
     int max_tokens;
+    q3asr_raw_stream_callback raw_text_callback;
+    void * raw_text_callback_user_data;
 } q3asr_transcribe_params;
 
 typedef struct {
@@ -30,12 +41,28 @@ typedef struct {
     char * text;
 } q3asr_transcribe_result;
 
+typedef struct {
+    char * text;
+    float start_time;
+    float end_time;
+} q3asr_aligned_item;
+
+typedef struct {
+    q3asr_aligned_item * items;
+    size_t n_items;
+} q3asr_alignment_result;
+
 q3asr_context_params q3asr_context_default_params(void);
+q3asr_aligner_context_params q3asr_aligner_context_default_params(void);
 q3asr_transcribe_params q3asr_transcribe_default_params(void);
 
 q3asr_context * q3asr_context_create(const q3asr_context_params * params);
 void q3asr_context_destroy(q3asr_context * ctx);
 const char * q3asr_context_last_error(const q3asr_context * ctx);
+
+q3asr_aligner_context * q3asr_aligner_context_create(const q3asr_aligner_context_params * params);
+void q3asr_aligner_context_destroy(q3asr_aligner_context * ctx);
+const char * q3asr_aligner_context_last_error(const q3asr_aligner_context * ctx);
 
 int q3asr_transcribe_wav_file(
     q3asr_context * ctx,
@@ -52,7 +79,25 @@ int q3asr_transcribe_pcm_f32(
     q3asr_transcribe_result * out_result
 );
 
+int q3asr_align_wav_file(
+    q3asr_aligner_context * ctx,
+    const char * wav_path,
+    const char * text,
+    const char * language,
+    q3asr_alignment_result * out_result
+);
+
+int q3asr_align_pcm_f32(
+    q3asr_aligner_context * ctx,
+    const float * samples,
+    int n_samples,
+    const char * text,
+    const char * language,
+    q3asr_alignment_result * out_result
+);
+
 void q3asr_transcribe_result_clear(q3asr_transcribe_result * result);
+void q3asr_alignment_result_clear(q3asr_alignment_result * result);
 
 #ifdef __cplusplus
 }

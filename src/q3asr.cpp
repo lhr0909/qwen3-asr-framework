@@ -2,17 +2,26 @@
 
 #include "audio_encoder.h"
 #include "decoder_llama.h"
+#include "forced_aligner.h"
 #include "mel_spectrogram.h"
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 namespace q3asr {
+
+namespace {
+
+} // namespace
 
 struct transcript_result {
     std::string raw_text;
@@ -62,6 +71,30 @@ public:
     ) {
         result = {};
 
+        const std::string language_hint = normalize_language(params.language_hint == nullptr ? "" : params.language_hint);
+        std::function<void(const std::string &)> raw_text_callback;
+        if (params.raw_text_callback != nullptr) {
+            raw_text_callback = [&](const std::string & raw_text) {
+                params.raw_text_callback(raw_text.c_str(), params.raw_text_callback_user_data);
+            };
+        }
+
+        return transcribe_chunk(samples, n_samples, params, language_hint, raw_text_callback, result);
+    }
+
+    const std::string & error() const { return error_msg_; }
+
+private:
+    bool transcribe_chunk(
+        const float * samples,
+        int n_samples,
+        const q3asr_transcribe_params & params,
+        const std::string & language_hint,
+        const std::function<void(const std::string &)> & raw_text_callback,
+        transcript_result & result
+    ) {
+        result = {};
+
         MelSpectrogram mel;
         if (!log_mel_spectrogram(samples, n_samples, mel_filters_, mel, params_.n_threads)) {
             error_msg_ = "Failed to compute the Qwen3-ASR mel spectrogram";
@@ -79,7 +112,8 @@ public:
         decoder_params.n_threads = params_.n_threads;
         decoder_params.n_batch = params_.n_batch;
         decoder_params.n_ctx = params_.n_ctx;
-        decoder_params.language_hint = normalize_language(params.language_hint == nullptr ? "" : params.language_hint);
+        decoder_params.language_hint = language_hint;
+        decoder_params.raw_text_callback = raw_text_callback;
 
         if (!decoder_.decode_audio_embeddings(audio_embeddings, decoder_params, result.raw_text)) {
             error_msg_ = decoder_.get_error();
@@ -92,9 +126,6 @@ public:
         return true;
     }
 
-    const std::string & error() const { return error_msg_; }
-
-private:
     static std::string normalize_language(const std::string & language) {
         if (language.empty()) {
             return {};
@@ -186,6 +217,11 @@ struct q3asr_context {
     std::string last_error;
 };
 
+struct q3asr_aligner_context {
+    std::unique_ptr<q3asr::ForcedAligner> aligner;
+    std::string last_error;
+};
+
 namespace {
 
 char * q3asr_strdup(const std::string & value) {
@@ -214,9 +250,18 @@ q3asr_context_params q3asr_context_default_params(void) {
     return params;
 }
 
+q3asr_aligner_context_params q3asr_aligner_context_default_params(void) {
+    q3asr_aligner_context_params params = {};
+    params.use_gpu = 1;
+    params.n_threads = default_thread_count();
+    return params;
+}
+
 q3asr_transcribe_params q3asr_transcribe_default_params(void) {
     q3asr_transcribe_params params = {};
     params.max_tokens = 256;
+    params.raw_text_callback = nullptr;
+    params.raw_text_callback_user_data = nullptr;
     return params;
 }
 
@@ -238,11 +283,45 @@ q3asr_context * q3asr_context_create(const q3asr_context_params * params) {
     return ctx.release();
 }
 
+q3asr_aligner_context * q3asr_aligner_context_create(const q3asr_aligner_context_params * params) {
+    const q3asr_aligner_context_params effective =
+        params != nullptr ? *params : q3asr_aligner_context_default_params();
+
+    if (effective.aligner_model_path == nullptr) {
+        return nullptr;
+    }
+
+    q3asr::configure_llama_logging();
+
+    auto ctx = std::make_unique<q3asr_aligner_context>();
+    ctx->aligner = std::make_unique<q3asr::ForcedAligner>();
+
+    q3asr::aligner_load_params load_params;
+    load_params.use_gpu = effective.use_gpu != 0;
+    load_params.n_threads = effective.n_threads;
+    load_params.korean_dict_path = effective.korean_dict_path != nullptr ? effective.korean_dict_path : "";
+
+    if (!ctx->aligner->load_model(effective.aligner_model_path, load_params)) {
+        ctx->last_error = ctx->aligner->error();
+        return ctx.release();
+    }
+
+    return ctx.release();
+}
+
 void q3asr_context_destroy(q3asr_context * ctx) {
     delete ctx;
 }
 
+void q3asr_aligner_context_destroy(q3asr_aligner_context * ctx) {
+    delete ctx;
+}
+
 const char * q3asr_context_last_error(const q3asr_context * ctx) {
+    return ctx == nullptr ? "" : ctx->last_error.c_str();
+}
+
+const char * q3asr_aligner_context_last_error(const q3asr_aligner_context * ctx) {
     return ctx == nullptr ? "" : ctx->last_error.c_str();
 }
 
@@ -297,6 +376,88 @@ int q3asr_transcribe_wav_file(
     return q3asr_transcribe_pcm_f32(ctx, samples.data(), static_cast<int>(samples.size()), params, out_result);
 }
 
+int q3asr_align_pcm_f32(
+    q3asr_aligner_context * ctx,
+    const float * samples,
+    int n_samples,
+    const char * text,
+    const char * language,
+    q3asr_alignment_result * out_result
+) {
+    if (
+        ctx == nullptr ||
+        ctx->aligner == nullptr ||
+        samples == nullptr ||
+        n_samples <= 0 ||
+        text == nullptr ||
+        out_result == nullptr
+    ) {
+        return 0;
+    }
+
+    q3asr_alignment_result_clear(out_result);
+
+    const q3asr::alignment_result result = ctx->aligner->align(
+        samples,
+        n_samples,
+        text,
+        language != nullptr ? language : ""
+    );
+
+    if (!result.success) {
+        ctx->last_error = result.error_msg.empty() ? ctx->aligner->error() : result.error_msg;
+        return 0;
+    }
+
+    out_result->items = static_cast<q3asr_aligned_item *>(
+        std::calloc(result.items.size(), sizeof(q3asr_aligned_item))
+    );
+    if (!result.items.empty() && out_result->items == nullptr) {
+        ctx->last_error = "Failed to allocate alignment result items";
+        return 0;
+    }
+
+    out_result->n_items = result.items.size();
+    for (size_t i = 0; i < result.items.size(); ++i) {
+        out_result->items[i].text = q3asr_strdup(result.items[i].text);
+        if (out_result->items[i].text == nullptr && !result.items[i].text.empty()) {
+            q3asr_alignment_result_clear(out_result);
+            ctx->last_error = "Failed to allocate alignment result text";
+            return 0;
+        }
+        out_result->items[i].start_time = result.items[i].start_time;
+        out_result->items[i].end_time = result.items[i].end_time;
+    }
+
+    return 1;
+}
+
+int q3asr_align_wav_file(
+    q3asr_aligner_context * ctx,
+    const char * wav_path,
+    const char * text,
+    const char * language,
+    q3asr_alignment_result * out_result
+) {
+    if (ctx == nullptr || wav_path == nullptr || text == nullptr || out_result == nullptr) {
+        return 0;
+    }
+
+    std::vector<float> samples;
+    int sample_rate = 0;
+    if (!load_wav(wav_path, samples, sample_rate)) {
+        ctx->last_error = "Failed to load WAV file";
+        return 0;
+    }
+
+    if (sample_rate != QWEN_SAMPLE_RATE) {
+        ctx->last_error = "Only 16 kHz WAV input is supported";
+        return 0;
+    }
+
+    return q3asr_align_pcm_f32(ctx, samples.data(), static_cast<int>(samples.size()), text, language, out_result);
+}
+
 void q3asr_transcribe_result_clear(q3asr_transcribe_result * result) {
     if (result == nullptr) {
         return;
@@ -309,4 +470,20 @@ void q3asr_transcribe_result_clear(q3asr_transcribe_result * result) {
     result->raw_text = nullptr;
     result->language = nullptr;
     result->text = nullptr;
+}
+
+void q3asr_alignment_result_clear(q3asr_alignment_result * result) {
+    if (result == nullptr) {
+        return;
+    }
+
+    if (result->items != nullptr) {
+        for (size_t i = 0; i < result->n_items; ++i) {
+            std::free(result->items[i].text);
+        }
+    }
+
+    std::free(result->items);
+    result->items = nullptr;
+    result->n_items = 0;
 }
