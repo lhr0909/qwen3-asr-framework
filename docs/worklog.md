@@ -181,6 +181,61 @@ Use the forced aligner inside the transcription pipeline itself so long audio ca
   - greedy argmax decode
   - matches the current reference-style usage in this repo and the sibling patched `llama.cpp` command lines
 
+### Chunked Streaming Follow-Up
+
+- Added a richer progress callback to the public transcription params:
+  - `q3asr_progress_callback`
+  - `q3asr_transcribe_params.progress_callback`
+  - `q3asr_transcribe_params.progress_callback_user_data`
+- The callback reports:
+  - `language`
+  - `committed_text`
+  - `partial_text`
+  - `chunk_index`
+  - `chunk_count`
+- Chose the `committed + partial` model over an append-only replacement stream because the long-audio path only knows stable ownership after decode, align, and boundary arbitration:
+  - `committed_text` is monotonic and safe to keep
+  - `partial_text` is the current decode window preview and can change on the next chunk boundary
+- Added a dedicated console-first CLI:
+  - `q3asr-chunk-stream-cli`
+  - it renders progress on stderr and prints the final transcript on stdout
+- Kept the existing `q3asr-cli` behavior unchanged:
+  - `--stream-raw` is still the raw append-only path
+  - the new committed/partial stream is separate on purpose
+
+### Chunked Streaming Validation
+
+- Rebuilt successfully:
+  - `cmake --build build -j`
+- Full suite still passes:
+  - `ctest --test-dir build --output-on-failure`
+  - observed: `7/7` passing
+- Extended `q3asr-long-transcribe-regression` to cover the new callback:
+  - it now captures both raw streaming and committed/partial progress streaming
+  - it checks that progress callbacks fire, that at least one non-empty partial was seen, and that the final committed text matches the final parsed transcript
+- Manual short-sample console run:
+  - `./build/q3asr-chunk-stream-cli --text-model models/gguf/Qwen3-ASR-1.7B-text-Q8_0.gguf --mmproj-model models/gguf/Qwen3-ASR-1.7B-mmproj.gguf --aligner-model models/gguf/qwen3-forced-aligner-0.6b-f16.gguf --audio testdata/q3asr-input.wav --audio-chunk-sec 6`
+  - observed: the console now shows a stable `committed` section plus a provisional `partial` section instead of trying to fake an append-only token stream through chunk boundaries
+
+### Chunked Streaming Gotchas
+
+- The provisional `partial_text` stream is still a heuristic preview:
+  - it strips the leading `language ...` prefix before `<asr_text>` is complete
+  - it also removes a simple suffix/prefix overlap against already committed text for readability
+- This is a console usability layer, not a stable machine-merge protocol yet.
+
+### Overlap Flag Follow-Up
+
+- Exposed the long-audio decode-window overlap on the CLI/test surfaces:
+  - `q3asr-cli --audio-overlap-sec <sec>`
+  - `q3asr-chunk-stream-cli --audio-overlap-sec <sec>`
+  - `q3asr-smoke-test --audio-overlap-sec <sec>`
+- Kept the default unchanged:
+  - overlap defaults to `5.0s` whenever chunking is enabled and the caller does not override it
+- The current boundary-arbitration band is still derived from the overlap inside `src/q3asr.cpp`:
+  - `min(overlap, max(0.75, overlap * 0.5))`
+  - so the current default `5.0s` overlap yields a `2.5s` confidence-arbitration band
+
 ## 2026-03-17
 
 ### Goal

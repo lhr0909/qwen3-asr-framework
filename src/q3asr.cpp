@@ -108,21 +108,67 @@ public:
             };
         }
 
+        progress_callback_fn progress_callback;
+        if (params.progress_callback != nullptr) {
+            progress_callback = [&](const std::string & language,
+                                    const std::string & committed_text,
+                                    const std::string & partial_text,
+                                    int chunk_index,
+                                    int chunk_count) {
+                params.progress_callback(
+                    language.c_str(),
+                    committed_text.c_str(),
+                    partial_text.c_str(),
+                    chunk_index,
+                    chunk_count,
+                    params.progress_callback_user_data
+                );
+            };
+        }
+
         if (
             params.aligner_context != nullptr &&
             params.aligner_context->aligner != nullptr &&
             params.max_audio_chunk_seconds > 0.0f &&
             static_cast<float>(n_samples) / QWEN_SAMPLE_RATE > params.max_audio_chunk_seconds
         ) {
-            return transcribe_long(samples, n_samples, params, language_hint, raw_text_callback, result);
+            return transcribe_long(samples, n_samples, params, language_hint, raw_text_callback, progress_callback, result);
         }
 
-        return transcribe_chunk(samples, n_samples, params, language_hint, raw_text_callback, result);
+        std::function<void(const std::string &)> chunk_raw_callback = raw_text_callback;
+        if (progress_callback) {
+            chunk_raw_callback = [&, raw_text_callback](const std::string & raw_text) {
+                if (raw_text_callback) {
+                    raw_text_callback(raw_text);
+                }
+                progress_callback(language_hint, {}, extract_partial_text(raw_text, language_hint), 1, 1);
+            };
+        }
+
+        const bool ok = transcribe_chunk(samples, n_samples, params, language_hint, chunk_raw_callback, result);
+        if (ok && progress_callback) {
+            progress_callback(
+                !result.language.empty() ? result.language : language_hint,
+                result.text,
+                {},
+                1,
+                1
+            );
+        }
+        return ok;
     }
 
     const std::string & error() const { return error_msg_; }
 
 private:
+    using progress_callback_fn = std::function<void(
+        const std::string & language,
+        const std::string & committed_text,
+        const std::string & partial_text,
+        int chunk_index,
+        int chunk_count
+    )>;
+
     bool transcribe_chunk(
         const float * samples,
         int n_samples,
@@ -187,6 +233,7 @@ private:
         const q3asr_transcribe_params & params,
         const std::string & requested_language,
         const std::function<void(const std::string &)> & raw_text_callback,
+        const progress_callback_fn & progress_callback,
         transcript_result & result
     ) {
         result = {};
@@ -211,6 +258,8 @@ private:
         chunk_params.audio_chunk_overlap_seconds = 0.0f;
         chunk_params.raw_text_callback = nullptr;
         chunk_params.raw_text_callback_user_data = nullptr;
+        chunk_params.progress_callback = nullptr;
+        chunk_params.progress_callback_user_data = nullptr;
 
         align_runtime_params align_params;
         align_params.max_chunk_seconds = std::max(
@@ -244,6 +293,8 @@ private:
         };
 
         for (size_t i = 0; i < core_chunks.size(); ++i) {
+            const int chunk_index = static_cast<int>(i + 1);
+            const int chunk_count = static_cast<int>(core_chunks.size());
             const int core_start = static_cast<int>(std::lround(core_chunks[i].offset_sec * QWEN_SAMPLE_RATE));
             const int core_end = std::min(n_samples, core_start + core_chunks[i].original_n_samples);
             const int window_start = std::max(0, core_start - overlap_samples);
@@ -254,12 +305,28 @@ private:
             }
 
             transcript_result chunk_result;
+            std::function<void(const std::string &)> chunk_raw_callback;
+            if (progress_callback) {
+                chunk_raw_callback = [&](const std::string & raw_text) {
+                    progress_callback(
+                        !resolved_language.empty() ? resolved_language : requested_language,
+                        merged_text,
+                        provisional_partial_text(
+                            merged_text,
+                            raw_text,
+                            !resolved_language.empty() ? resolved_language : requested_language
+                        ),
+                        chunk_index,
+                        chunk_count
+                    );
+                };
+            }
             if (!transcribe_chunk(
                     samples + window_start,
                     window_len,
                     chunk_params,
                     resolved_language,
-                    {},
+                    chunk_raw_callback,
                     chunk_result)) {
                 error_msg_ = "Chunked transcription failed for chunk " +
                              std::to_string(i + 1) + "/" + std::to_string(core_chunks.size()) +
@@ -312,6 +379,9 @@ private:
                 );
                 append_text_fragment(merged_text, leading_fragment.text);
                 emit_progress();
+                if (progress_callback) {
+                    progress_callback(resolved_language, merged_text, {}, chunk_index, chunk_count);
+                }
 
                 if (is_last_chunk) {
                     break;
@@ -354,6 +424,9 @@ private:
             );
             append_text_fragment(merged_text, stable_fragment.text);
             emit_progress();
+            if (progress_callback) {
+                progress_callback(resolved_language, merged_text, {}, chunk_index, chunk_count);
+            }
 
             previous_chunk = std::move(current_chunk);
         }
@@ -444,6 +517,58 @@ private:
         }
 
         return "language " + resolved_language + "<asr_text>" + merged_text;
+    }
+
+    static std::string extract_partial_text(const std::string & raw_text, const std::string & forced_language) {
+        if (!forced_language.empty()) {
+            return raw_text;
+        }
+
+        const std::string tag = "<asr_text>";
+        const size_t tag_pos = raw_text.find(tag);
+        if (tag_pos != std::string::npos) {
+            return raw_text.substr(tag_pos + tag.size());
+        }
+
+        std::string lowered;
+        lowered.reserve(raw_text.size());
+        for (unsigned char ch : raw_text) {
+            lowered.push_back(static_cast<char>(std::tolower(ch)));
+        }
+
+        if (lowered.rfind("language", 0) == 0) {
+            return {};
+        }
+
+        return raw_text;
+    }
+
+    static std::string strip_committed_overlap(const std::string & committed_text, const std::string & partial_text) {
+        if (committed_text.empty() || partial_text.empty()) {
+            return partial_text;
+        }
+
+        const size_t max_overlap = std::min<size_t>({committed_text.size(), partial_text.size(), 512});
+        size_t best = 0;
+        for (size_t n = max_overlap; n > 0; --n) {
+            if (committed_text.compare(committed_text.size() - n, n, partial_text, 0, n) == 0) {
+                best = n;
+                break;
+            }
+        }
+
+        if (best >= 12) {
+            return partial_text.substr(best);
+        }
+        return partial_text;
+    }
+
+    static std::string provisional_partial_text(
+        const std::string & committed_text,
+        const std::string & raw_text,
+        const std::string & forced_language
+    ) {
+        return strip_committed_overlap(committed_text, extract_partial_text(raw_text, forced_language));
     }
 
     static std::pair<size_t, size_t> trim_ascii_bounds(
@@ -769,6 +894,8 @@ q3asr_transcribe_params q3asr_transcribe_default_params(void) {
     params.audio_chunk_overlap_seconds = 0.0f;
     params.raw_text_callback = nullptr;
     params.raw_text_callback_user_data = nullptr;
+    params.progress_callback = nullptr;
+    params.progress_callback_user_data = nullptr;
     return params;
 }
 

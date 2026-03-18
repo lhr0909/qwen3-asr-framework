@@ -12,6 +12,16 @@ struct StreamCapture {
     std::string last_raw;
 };
 
+struct ProgressCapture {
+    int call_count = 0;
+    int partial_nonempty_count = 0;
+    std::string last_language;
+    std::string last_committed;
+    std::string last_partial;
+    int last_chunk_index = 0;
+    int last_chunk_count = 0;
+};
+
 void capture_stream_callback(const char * raw_text, void * user_data) {
     auto * capture = static_cast<StreamCapture *>(user_data);
     if (capture == nullptr) {
@@ -20,6 +30,30 @@ void capture_stream_callback(const char * raw_text, void * user_data) {
 
     ++capture->call_count;
     capture->last_raw = raw_text != nullptr ? raw_text : "";
+}
+
+void capture_progress_callback(
+    const char * language,
+    const char * committed_text,
+    const char * partial_text,
+    int chunk_index,
+    int chunk_count,
+    void * user_data
+) {
+    auto * capture = static_cast<ProgressCapture *>(user_data);
+    if (capture == nullptr) {
+        return;
+    }
+
+    ++capture->call_count;
+    capture->last_language = language != nullptr ? language : "";
+    capture->last_committed = committed_text != nullptr ? committed_text : "";
+    capture->last_partial = partial_text != nullptr ? partial_text : "";
+    capture->last_chunk_index = chunk_index;
+    capture->last_chunk_count = chunk_count;
+    if (!capture->last_partial.empty()) {
+        ++capture->partial_nonempty_count;
+    }
 }
 
 } // namespace
@@ -32,8 +66,12 @@ int main(int argc, char ** argv) {
     std::string expect_substring;
     std::string expect_language;
     int expect_stream_calls_at_least = 0;
+    int expect_progress_calls_at_least = 0;
     bool capture_stream = false;
+    bool capture_progress = false;
     bool expect_stream_equals_raw = false;
+    bool expect_progress_saw_partial = false;
+    bool expect_progress_final_committed_equals_text = false;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--text-model") == 0 && i + 1 < argc) {
@@ -50,6 +88,9 @@ int main(int argc, char ** argv) {
             // NOLINTNEXTLINE(cert-err34-c)
             // std::strtof is sufficient here because this is a small argv-only test harness.
             tx_params.max_audio_chunk_seconds = std::strtof(argv[++i], nullptr);
+        } else if (std::strcmp(argv[i], "--audio-overlap-sec") == 0 && i + 1 < argc) {
+            // NOLINTNEXTLINE(cert-err34-c)
+            tx_params.audio_chunk_overlap_seconds = std::strtof(argv[++i], nullptr);
         } else if (std::strcmp(argv[i], "--temp") == 0 && i + 1 < argc) {
             // NOLINTNEXTLINE(cert-err34-c)
             tx_params.temperature = std::strtof(argv[++i], nullptr);
@@ -59,10 +100,18 @@ int main(int argc, char ** argv) {
             expect_language = argv[++i];
         } else if (std::strcmp(argv[i], "--capture-stream") == 0) {
             capture_stream = true;
+        } else if (std::strcmp(argv[i], "--capture-progress") == 0) {
+            capture_progress = true;
         } else if (std::strcmp(argv[i], "--expect-stream-equals-raw") == 0) {
             expect_stream_equals_raw = true;
+        } else if (std::strcmp(argv[i], "--expect-progress-saw-partial") == 0) {
+            expect_progress_saw_partial = true;
+        } else if (std::strcmp(argv[i], "--expect-progress-final-committed-equals-text") == 0) {
+            expect_progress_final_committed_equals_text = true;
         } else if (std::strcmp(argv[i], "--expect-stream-calls-at-least") == 0 && i + 1 < argc) {
             expect_stream_calls_at_least = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--expect-progress-calls-at-least") == 0 && i + 1 < argc) {
+            expect_progress_calls_at_least = std::atoi(argv[++i]);
         } else {
             std::cerr << "Unknown or incomplete argument: " << argv[i] << "\n";
             return 1;
@@ -88,6 +137,7 @@ int main(int argc, char ** argv) {
 
     q3asr_transcribe_result result = {};
     StreamCapture stream_capture;
+    ProgressCapture progress_capture;
     q3asr_aligner_context * aligner_ctx = nullptr;
     if (aligner_params.aligner_model_path != nullptr) {
         aligner_ctx = q3asr_aligner_context_create(&aligner_params);
@@ -116,6 +166,10 @@ int main(int argc, char ** argv) {
         tx_params.raw_text_callback = capture_stream_callback;
         tx_params.raw_text_callback_user_data = &stream_capture;
     }
+    if (capture_progress || expect_progress_calls_at_least > 0 || expect_progress_saw_partial || expect_progress_final_committed_equals_text) {
+        tx_params.progress_callback = capture_progress_callback;
+        tx_params.progress_callback_user_data = &progress_capture;
+    }
 
     if (!q3asr_transcribe_wav_file(ctx, audio_path.c_str(), &tx_params, &result)) {
         std::cerr << q3asr_context_last_error(ctx) << "\n";
@@ -137,6 +191,15 @@ int main(int argc, char ** argv) {
         std::cout << "stream_calls=" << stream_capture.call_count << "\n";
         std::cout << "stream_raw=" << stream_capture.last_raw << "\n";
     }
+    if (tx_params.progress_callback != nullptr) {
+        std::cout << "progress_calls=" << progress_capture.call_count << "\n";
+        std::cout << "progress_language=" << progress_capture.last_language << "\n";
+        std::cout << "progress_committed=" << progress_capture.last_committed << "\n";
+        std::cout << "progress_partial=" << progress_capture.last_partial << "\n";
+        std::cout << "progress_partial_nonempty=" << progress_capture.partial_nonempty_count << "\n";
+        std::cout << "progress_chunk_index=" << progress_capture.last_chunk_index << "\n";
+        std::cout << "progress_chunk_count=" << progress_capture.last_chunk_count << "\n";
+    }
 
     bool ok = !text.empty();
     if (ok && !expect_substring.empty()) {
@@ -150,6 +213,15 @@ int main(int argc, char ** argv) {
     }
     if (ok && expect_stream_equals_raw) {
         ok = stream_capture.last_raw == raw;
+    }
+    if (ok && expect_progress_calls_at_least > 0) {
+        ok = progress_capture.call_count >= expect_progress_calls_at_least;
+    }
+    if (ok && expect_progress_saw_partial) {
+        ok = progress_capture.partial_nonempty_count > 0;
+    }
+    if (ok && expect_progress_final_committed_equals_text) {
+        ok = progress_capture.last_committed == text && progress_capture.last_partial.empty();
     }
 
     q3asr_transcribe_result_clear(&result);

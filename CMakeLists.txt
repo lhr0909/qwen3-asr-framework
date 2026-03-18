@@ -79,6 +79,9 @@ endif()
 if(Q3ASR_BUILD_CLI)
     add_executable(q3asr-cli cli/q3asr_cli.cpp)
     target_link_libraries(q3asr-cli PRIVATE q3asr)
+
+    add_executable(q3asr-chunk-stream-cli cli/q3asr_chunked_stream_cli.cpp)
+    target_link_libraries(q3asr-chunk-stream-cli PRIVATE q3asr)
 endif()
 
 if(Q3ASR_BUILD_TESTS)
@@ -195,6 +198,10 @@ if(Q3ASR_BUILD_TESTS)
                         --capture-stream
                         --expect-stream-calls-at-least 2
                         --expect-stream-equals-raw
+                        --capture-progress
+                        --expect-progress-calls-at-least 2
+                        --expect-progress-saw-partial
+                        --expect-progress-final-committed-equals-text
                 )
             endif()
         endif()

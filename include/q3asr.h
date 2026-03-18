@@ -10,6 +10,14 @@ extern "C" {
 typedef struct q3asr_context q3asr_context;
 typedef struct q3asr_aligner_context q3asr_aligner_context;
 typedef void (*q3asr_raw_stream_callback)(const char * raw_text, void * user_data);
+typedef void (*q3asr_progress_callback)(
+    const char * language,
+    const char * committed_text,
+    const char * partial_text,
+    int chunk_index,
+    int chunk_count,
+    void * user_data
+);
 
 typedef struct {
     const char * text_model_path;
@@ -37,6 +45,8 @@ typedef struct {
     float audio_chunk_overlap_seconds;
     q3asr_raw_stream_callback raw_text_callback;
     void * raw_text_callback_user_data;
+    q3asr_progress_callback progress_callback;
+    void * progress_callback_user_data;
 } q3asr_transcribe_params;
 
 typedef struct {

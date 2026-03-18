@@ -108,6 +108,7 @@ void print_usage(const char * program) {
         << "Options:\n"
         << "  --language <name>   Force a language hint\n"
         << "  --audio-chunk-sec <sec>  Max audio seconds per transcription chunk when using --aligner-model\n"
+        << "  --audio-overlap-sec <sec>  Overlap seconds between chunk decode windows (default: 5)\n"
         << "  --max-tokens <n>    Maximum number of decoder tokens (default: 256)\n"
         << "  --temp <value>      Decoder temperature (default: 0, greedy)\n"
         << "  --align-max-chunk-sec <sec>  Max audio seconds per forced-align chunk (default: 180, 0 disables chunking)\n"
@@ -156,6 +157,8 @@ int main(int argc, char ** argv) {
             tx_params.language_hint = argv[++i];
         } else if (std::strcmp(arg, "--audio-chunk-sec") == 0 && i + 1 < argc) {
             tx_params.max_audio_chunk_seconds = std::strtof(argv[++i], nullptr);
+        } else if (std::strcmp(arg, "--audio-overlap-sec") == 0 && i + 1 < argc) {
+            tx_params.audio_chunk_overlap_seconds = std::strtof(argv[++i], nullptr);
         } else if (std::strcmp(arg, "--align-max-chunk-sec") == 0 && i + 1 < argc) {
             align_params.max_chunk_seconds = std::strtof(argv[++i], nullptr);
         } else if (std::strcmp(arg, "--max-tokens") == 0 && i + 1 < argc) {

@@ -167,7 +167,19 @@ Long transcription spot check:
   --aligner-model models/gguf/qwen3-forced-aligner-0.6b-f16.gguf \
   --audio testdata/long-audio.wav \
   --audio-chunk-sec 180 \
+  --audio-overlap-sec 5 \
   --max-tokens 1024
+```
+
+Chunked console-stream spot check:
+
+```sh
+./build/q3asr-chunk-stream-cli \
+  --text-model models/gguf/Qwen3-ASR-1.7B-text-Q8_0.gguf \
+  --mmproj-model models/gguf/Qwen3-ASR-1.7B-mmproj.gguf \
+  --aligner-model models/gguf/qwen3-forced-aligner-0.6b-f16.gguf \
+  --audio testdata/q3asr-input.wav \
+  --audio-chunk-sec 6
 ```
 
 4. If the change touches parity-sensitive areas, compare against the sibling patched `llama.cpp` CLI.
@@ -259,9 +271,18 @@ If you add another aligner regression:
 - The current long-audio transcription stitcher uses:
   - low-energy core chunks
   - `5s` overlap on decode windows by default when chunking is enabled through the CLI/tests
+  - `--audio-overlap-sec` can override that default
   - a small confidence-scored boundary band where neighboring windows compete
   - aligner-owned midpoint selection outside that arbitration band
   - raw-text span recovery from normalized aligner units
+- The current boundary-arbitration band is derived from the overlap as:
+  - `min(overlap, max(0.75, overlap * 0.5))`
+  - with the default `5s` overlap, that yields a `2.5s` arbitration band
+- The new progress callback / `q3asr-chunk-stream-cli` uses:
+  - `committed_text` for stable merged output
+  - `partial_text` for provisional current-window text
+  - chunk index/count metadata for console rendering
+  - no rollback-capable edit protocol yet; the richer UI is built from separate committed/partial fields instead
 - The 15-minute long-transcription path now completes, but it is still heuristic:
   - it produces one continuous `language ...<asr_text>...` block
   - decoder token logprobs are now available internally for boundary arbitration, but the merged result is still not exact-parity with the reference transcript at every boundary or at the tail
