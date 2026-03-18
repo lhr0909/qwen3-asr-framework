@@ -74,6 +74,113 @@ Follow the official Python timestamping path closely enough to make long-audio f
 - That means the path is good enough for large-file timestamp experiments, but it is not yet the final punctuation-preserving merge policy for future transcription stitching.
 - A stale cached `Q3ASR_TEST_AUDIO_ENGLISH` path can still point at an old root-level `q3asr-input.wav`; the CMake fallback recovers to `testdata/q3asr-input.wav` automatically when that happens.
 
+### Follow-Up Goal
+
+Use the forced aligner inside the transcription pipeline itself so long audio can be decoded in bounded windows while still producing one continuous transcript.
+
+### Follow-Up Changes
+
+- Extended `q3asr_transcribe_params` with:
+  - `aligner_context`
+  - `max_audio_chunk_seconds`
+  - `audio_chunk_overlap_seconds`
+- Reused the loaded forced aligner from transcription calls instead of loading a second hidden runtime.
+- Added a long-audio transcription stitcher in `src/q3asr.cpp`:
+  - split the full audio into Python-style low-energy core chunks
+  - expand each chunk into an overlapped decode window
+  - transcribe each window with the normal decoder path
+  - force-align the decoded text back onto the same window audio
+  - keep only the aligner-owned middle span for the chunk core
+  - map the owned normalized units back to raw text spans and append them into one merged transcript
+- Kept the old one-shot transcription path unchanged for short audio and for requests without an aligner context.
+- Extended `q3asr-cli` so transcription mode can now also take:
+  - `--aligner-model`
+  - `--audio-chunk-sec`
+- Added a real-model chunked transcription regression:
+  - `q3asr-long-transcribe-regression`
+
+### Follow-Up Validation
+
+- Rebuilt and reconfigured successfully:
+  - `cmake -S . -B build`
+  - `cmake --build build -j`
+- Full test suite passes:
+  - `ctest --test-dir build --output-on-failure`
+  - observed: `7/7` passing
+- Manual short-sample chunked transcription check:
+  - `./build/q3asr-smoke-test --text-model models/gguf/Qwen3-ASR-1.7B-text-Q8_0.gguf --mmproj-model models/gguf/Qwen3-ASR-1.7B-mmproj.gguf --aligner-model models/gguf/qwen3-forced-aligner-0.6b-f16.gguf --audio testdata/q3asr-input.wav --audio-chunk-sec 6 --expect-language English --expect-substring /r/apple --capture-stream --expect-stream-calls-at-least 2 --expect-stream-equals-raw`
+  - observed: one continuous final raw string with the `/r/apple` phrase preserved
+- Manual 15-minute end-to-end transcription run:
+  - `./build/q3asr-cli --text-model models/gguf/Qwen3-ASR-1.7B-text-Q8_0.gguf --mmproj-model models/gguf/Qwen3-ASR-1.7B-mmproj.gguf --aligner-model models/gguf/qwen3-forced-aligner-0.6b-f16.gguf --audio testdata/long-audio.wav --audio-chunk-sec 180 --max-tokens 1024 --show-raw > /tmp/q3asr-long-transcribe.txt`
+- Observed for the 15-minute fixture:
+  - runtime: about `251.02s`
+  - peak RSS: about `3.47 GB`
+  - exactly one `language English<asr_text>` prefix in the final output
+  - one continuous `text:` block instead of per-chunk resets
+  - expected content like `StatSig` and `I downloaded Xcode` remained present
+
+### Follow-Up Remaining Work
+
+- Improve the raw-text span recovery so punctuation-heavy tails and edge tokens survive more reliably.
+- Decide whether chunked long-audio transcription should auto-scale `max_tokens` instead of relying on the caller to raise it for dense speech.
+- Compare boundary quality against a Python-side chunked ASR + forced-align experiment, not just against the captured long transcript.
+- Revisit whether chunk overlap should become user-configurable on the public CLI/API once the merge policy settles.
+
+### Follow-Up Gotchas
+
+- The long-audio transcription merge is continuous, but it is still heuristic:
+  - it stayed close to the known 15-minute reference transcript
+  - it still drifted at the tail on this run (`600.` vs. the reference `600 bucks.`)
+- The current callback behavior differs by mode:
+  - one-shot decoding still streams token-by-token
+  - chunked long-audio mode currently emits cumulative committed text after each merged chunk
+
+### Boundary Confidence Follow-Up
+
+- Threaded decoder token logprobs through the internal transcription path:
+  - `src/decoder_llama.cpp` now records one byte span plus chosen-token logprob for each generated token
+  - `src/q3asr.cpp` now trims those spans down to the parsed transcript text after removing any `language ...<asr_text>` prefix
+- Reworked the long-audio stitcher in `src/q3asr.cpp`:
+  - keep the existing low-energy core chunking and overlapped decode windows
+  - reserve a small overlap band around each chunk boundary
+  - extract that same absolute-time band from the left and right neighboring windows
+  - score each candidate band by average decoder logprob over the recovered raw-text byte span
+  - let the higher-confidence side own the boundary band before appending the stable middle spans
+- Kept the public CLI/API surface unchanged:
+  - no new flags were added
+  - confidence is currently internal merge metadata, not a public result field yet
+
+### Boundary Confidence Validation
+
+- Rebuilt successfully:
+  - `cmake --build build -j`
+- Full suite still passes:
+  - `ctest --test-dir build --output-on-failure`
+  - observed: `7/7` passing
+- Re-ran the 15-minute transcription spot check:
+  - `./build/q3asr-cli --text-model models/gguf/Qwen3-ASR-1.7B-text-Q8_0.gguf --mmproj-model models/gguf/Qwen3-ASR-1.7B-mmproj.gguf --aligner-model models/gguf/qwen3-forced-aligner-0.6b-f16.gguf --audio testdata/long-audio.wav --audio-chunk-sec 180 --max-tokens 1024 --show-raw > /tmp/q3asr-long-transcribe-new.txt`
+  - observed runtime: about `249s`
+  - observed result: still exactly one continuous `language English<asr_text>` block
+  - observed tail: still ends at `600.` instead of the reference `600 bucks.`
+
+### Boundary Confidence Remaining Work
+
+- The new boundary arbitration is a better mechanism than plain midpoint ownership, but it is not enough by itself to get reference-level long-audio parity.
+- If long-audio quality remains the priority, the next likely improvements are:
+  - expose per-token confidence publicly for debugging
+  - compare left/right overlap candidates with a stronger span similarity check, not just mean logprob plus prefix heuristics
+  - evaluate chunked output directly against a Python-side chunked-ASR experiment instead of only against the captured long transcript
+
+### Temperature Follow-Up
+
+- Exposed decoder temperature through the public transcription params and the CLI:
+  - `q3asr_transcribe_params.temperature`
+  - `decoder_transcribe_params.temperature`
+  - `q3asr-cli --temp <value>`
+- Kept the default at `0.0`, which preserves the previous behavior exactly:
+  - greedy argmax decode
+  - matches the current reference-style usage in this repo and the sibling patched `llama.cpp` command lines
+
 ## 2026-03-17
 
 ### Goal

@@ -30,12 +30,6 @@ constexpr float Q3ASR_FA_DEFAULT_SEARCH_EXPAND_SECONDS = 5.0f;
 constexpr float Q3ASR_FA_DEFAULT_MIN_WINDOW_MS = 100.0f;
 constexpr float Q3ASR_FA_MIN_INPUT_SECONDS = 0.5f;
 
-struct audio_chunk {
-    std::vector<float> samples;
-    int original_n_samples = 0;
-    float offset_sec = 0.0f;
-};
-
 int64_t now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()
@@ -102,13 +96,13 @@ float round_millis(float value) {
     return std::round(value * 1000.0f) / 1000.0f;
 }
 
-std::vector<audio_chunk> split_audio_into_chunks(
+std::vector<split_audio_chunk> split_audio_into_chunks_impl(
     const float * samples,
     int n_samples,
     int sample_rate,
     const align_runtime_params & params
 ) {
-    std::vector<audio_chunk> chunks;
+    std::vector<split_audio_chunk> chunks;
     if (samples == nullptr || n_samples <= 0 || sample_rate <= 0) {
         return chunks;
     }
@@ -122,7 +116,7 @@ std::vector<audio_chunk> split_audio_into_chunks(
 
     const float total_sec = static_cast<float>(n_samples) / static_cast<float>(sample_rate);
     if (max_chunk_sec <= 0.0f || total_sec <= max_chunk_sec) {
-        audio_chunk chunk;
+        split_audio_chunk chunk;
         chunk.samples.assign(samples, samples + n_samples);
         chunk.original_n_samples = n_samples;
         chunks.push_back(std::move(chunk));
@@ -177,7 +171,7 @@ std::vector<audio_chunk> split_audio_into_chunks(
         boundary = std::max(boundary, start + 1);
         boundary = std::min(boundary, n_samples);
 
-        audio_chunk chunk;
+        split_audio_chunk chunk;
         chunk.samples.assign(samples + start, samples + boundary);
         chunk.original_n_samples = boundary - start;
         chunk.offset_sec = offset_sec;
@@ -191,7 +185,7 @@ std::vector<audio_chunk> split_audio_into_chunks(
         start = boundary;
     }
 
-    audio_chunk tail;
+    split_audio_chunk tail;
     tail.samples.assign(samples + start, samples + n_samples);
     tail.original_n_samples = n_samples - start;
     tail.offset_sec = offset_sec;
@@ -204,7 +198,7 @@ std::vector<audio_chunk> split_audio_into_chunks(
 }
 
 std::vector<std::pair<size_t, size_t>> assign_word_ranges(
-    const std::vector<audio_chunk> & chunks,
+    const std::vector<split_audio_chunk> & chunks,
     size_t n_words,
     int total_n_samples
 ) {
@@ -533,6 +527,204 @@ std::vector<std::string> tokenize_korean_dict(
     return result;
 }
 
+struct provisional_span {
+    std::string text;
+    size_t byte_start = 0;
+    size_t byte_end = 0;
+};
+
+void flush_provisional_buffer(
+    std::vector<provisional_span> & spans,
+    std::string & buffer,
+    size_t & buffer_start,
+    size_t & buffer_end
+) {
+    if (buffer.empty()) {
+        return;
+    }
+
+    spans.push_back({buffer, buffer_start, buffer_end});
+    buffer.clear();
+    buffer_start = 0;
+    buffer_end = 0;
+}
+
+std::vector<normalized_word_span> normalize_space_lang_with_spans(const std::string & text) {
+    std::vector<normalized_word_span> result;
+    size_t i = 0;
+
+    while (i < text.size()) {
+        while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i])) != 0) {
+            ++i;
+        }
+        if (i >= text.size()) {
+            break;
+        }
+
+        const size_t seg_start = i;
+        while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i])) == 0) {
+            i += utf8_char_len(static_cast<unsigned char>(text[i]));
+        }
+        const size_t seg_end = i;
+
+        std::vector<provisional_span> spans;
+        std::string buffer;
+        size_t buffer_start = 0;
+        size_t buffer_end = 0;
+        bool saw_cjk = false;
+
+        for (size_t pos = seg_start; pos < seg_end;) {
+            const size_t len = utf8_char_len(static_cast<unsigned char>(text[pos]));
+            const size_t next = std::min(pos + len, seg_end);
+            const std::string ch = text.substr(pos, next - pos);
+
+            if (is_kept_char(ch)) {
+                uint32_t code = 0;
+                decode_utf8_codepoint(ch, code);
+                if (is_cjk_char(code)) {
+                    flush_provisional_buffer(spans, buffer, buffer_start, buffer_end);
+                    spans.push_back({ch, pos, next});
+                    saw_cjk = true;
+                } else {
+                    if (buffer.empty()) {
+                        buffer_start = pos;
+                    }
+                    buffer += ch;
+                    buffer_end = next;
+                }
+            }
+
+            pos = next;
+        }
+
+        flush_provisional_buffer(spans, buffer, buffer_start, buffer_end);
+        if (spans.empty()) {
+            continue;
+        }
+
+        if (spans.size() == 1 && !saw_cjk) {
+            spans[0].byte_start = seg_start;
+            spans[0].byte_end = seg_end;
+        }
+
+        for (const provisional_span & span : spans) {
+            result.push_back({span.text, span.byte_start, span.byte_end});
+        }
+    }
+
+    return result;
+}
+
+std::vector<normalized_word_span> normalize_japanese_with_spans(const std::string & text) {
+    std::vector<normalized_word_span> result;
+    std::string buffer;
+    size_t buffer_start = 0;
+    size_t buffer_end = 0;
+
+    auto flush = [&]() {
+        if (!buffer.empty()) {
+            result.push_back({buffer, buffer_start, buffer_end});
+            buffer.clear();
+            buffer_start = 0;
+            buffer_end = 0;
+        }
+    };
+
+    for (size_t pos = 0; pos < text.size();) {
+        const size_t len = utf8_char_len(static_cast<unsigned char>(text[pos]));
+        const size_t next = std::min(pos + len, text.size());
+        const std::string ch = text.substr(pos, next - pos);
+
+        if (!is_kept_char(ch)) {
+            flush();
+            pos = next;
+            continue;
+        }
+
+        uint32_t code = 0;
+        decode_utf8_codepoint(ch, code);
+        if (is_cjk_char(code)) {
+            flush();
+            result.push_back({ch, pos, next});
+        } else {
+            if (buffer.empty()) {
+                buffer_start = pos;
+            }
+            buffer += ch;
+            buffer_end = next;
+        }
+
+        pos = next;
+    }
+
+    flush();
+    return result;
+}
+
+std::vector<normalized_word_span> normalize_korean_with_spans(
+    const std::string & text,
+    const std::unordered_set<std::string> & ko_dict
+) {
+    std::vector<normalized_word_span> result;
+    size_t i = 0;
+
+    while (i < text.size()) {
+        while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i])) != 0) {
+            ++i;
+        }
+        if (i >= text.size()) {
+            break;
+        }
+
+        const size_t seg_start = i;
+        while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i])) == 0) {
+            i += utf8_char_len(static_cast<unsigned char>(text[i]));
+        }
+        const size_t seg_end = i;
+
+        const std::string cleaned = clean_token(text.substr(seg_start, seg_end - seg_start));
+        if (cleaned.empty()) {
+            continue;
+        }
+
+        const size_t length = utf8_strlen(cleaned);
+        if (length <= 2 || ko_dict.empty()) {
+            result.push_back({cleaned, seg_start, seg_end});
+            continue;
+        }
+
+        float best_score = -1.0e9f;
+        size_t best_left_len = 0;
+        std::string best_left;
+        std::string best_right;
+
+        for (size_t e = 2; e <= length; ++e) {
+            const std::string left = utf8_substr(cleaned, 0, e);
+            const std::string right = utf8_substr(cleaned, e, length - e);
+            const float score = ko_dict.count(left) != 0 ? 1.0f : 0.0f;
+
+            if (score > best_score || (score == best_score && e > best_left_len)) {
+                best_score = score;
+                best_left_len = e;
+                best_left = left;
+                best_right = right;
+            }
+        }
+
+        if (best_right.empty()) {
+            result.push_back({best_left.empty() ? cleaned : best_left, seg_start, seg_end});
+            continue;
+        }
+
+        const size_t left_bytes = utf8_substr(cleaned, 0, best_left_len).size();
+        const size_t split_pos = std::min(seg_start + left_bytes, seg_end);
+        result.push_back({best_left, seg_start, split_pos});
+        result.push_back({best_right, split_pos, seg_end});
+    }
+
+    return result;
+}
+
 const std::vector<std::string> & get_byte_to_unicode_table() {
     static std::vector<std::string> table;
     if (!table.empty()) {
@@ -640,6 +832,15 @@ std::vector<std::string> bpe_encode_word(
 }
 
 } // namespace
+
+std::vector<split_audio_chunk> split_audio_into_chunks(
+    const float * samples,
+    int n_samples,
+    int sample_rate,
+    const align_runtime_params & params
+) {
+    return split_audio_into_chunks_impl(samples, n_samples, sample_rate, params);
+}
 
 ForcedAligner::~ForcedAligner() {
     if (state_.sched != nullptr) {
@@ -1686,6 +1887,20 @@ std::vector<std::string> ForcedAligner::normalize_alignment_words(
     return tokenize_space_lang(text);
 }
 
+std::vector<normalized_word_span> ForcedAligner::normalize_with_spans(
+    const std::string & text,
+    const std::string & language
+) const {
+    const std::string lang = to_lower_ascii(language);
+    if (lang == "japanese") {
+        return normalize_japanese_with_spans(text);
+    }
+    if (lang == "korean" && !model_.ko_dict.empty()) {
+        return normalize_korean_with_spans(text, model_.ko_dict);
+    }
+    return normalize_space_lang_with_spans(text);
+}
+
 std::vector<int32_t> ForcedAligner::encode_words_with_timestamps(const std::vector<std::string> & words) const {
     std::vector<int32_t> tokens;
 
@@ -1865,7 +2080,7 @@ alignment_result ForcedAligner::align_chunked(
     alignment_result result;
     const int64_t t_total_start = now_ms();
 
-    const std::vector<audio_chunk> chunks = split_audio_into_chunks(samples, n_samples, QWEN_SAMPLE_RATE, runtime_params);
+    const std::vector<split_audio_chunk> chunks = split_audio_into_chunks(samples, n_samples, QWEN_SAMPLE_RATE, runtime_params);
     if (chunks.empty()) {
         result.error_msg = "Failed to split audio for chunked alignment";
         return result;

@@ -1,9 +1,12 @@
 #include "decoder_llama.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <mutex>
+#include <random>
 
 namespace q3asr {
 
@@ -160,9 +163,13 @@ bool LlamaDecoder::load_model(const std::string & path, const decoder_load_param
 bool LlamaDecoder::decode_audio_embeddings(
     const std::vector<float> & embeddings,
     const decoder_transcribe_params & params,
-    std::string & raw_text
+    std::string & raw_text,
+    std::vector<decoder_token_span> * out_token_spans
 ) const {
     raw_text.clear();
+    if (out_token_spans != nullptr) {
+        out_token_spans->clear();
+    }
 
     if (model_ == nullptr || vocab_ == nullptr) {
         error_msg_ = "Decoder model is not loaded";
@@ -211,20 +218,22 @@ bool LlamaDecoder::decode_audio_embeddings(
         return false;
     }
 
-    std::vector<llama_token> generated_tokens;
-    generated_tokens.reserve(static_cast<size_t>(params.max_tokens));
-
     for (int i = 0; i < params.max_tokens; ++i) {
-        const llama_token token = sample_greedy(ctx);
+        float token_logprob = 0.0f;
+        const llama_token token = sample_token(ctx, params.temperature, &token_logprob);
         if (llama_vocab_is_eog(vocab_, token)) {
             break;
         }
 
-        generated_tokens.push_back(token);
+        const std::string piece = token_to_piece(token);
+        const size_t byte_start = raw_text.size();
+        raw_text += piece;
+        if (out_token_spans != nullptr) {
+            out_token_spans->push_back({byte_start, raw_text.size(), token_logprob});
+        }
         if (params.raw_text_callback) {
-            const std::string current = detokenize(generated_tokens);
-            if (is_valid_utf8(current) && !contains_replacement_char(current)) {
-                params.raw_text_callback(current);
+            if (is_valid_utf8(raw_text) && !contains_replacement_char(raw_text)) {
+                params.raw_text_callback(raw_text);
             }
         }
         if (!decode_token_batch(ctx, &token, 1, true, n_past)) {
@@ -233,7 +242,6 @@ bool LlamaDecoder::decode_audio_embeddings(
         }
     }
 
-    raw_text = detokenize(generated_tokens);
     llama_free(ctx);
     return true;
 }
@@ -300,6 +308,36 @@ std::string LlamaDecoder::detokenize(const std::vector<llama_token> & tokens) co
             buf.data(),
             static_cast<int32_t>(buf.size()),
             false,
+            true
+        );
+    }
+
+    if (rc < 0) {
+        return {};
+    }
+
+    return std::string(buf.data(), static_cast<size_t>(rc));
+}
+
+std::string LlamaDecoder::token_to_piece(llama_token token) const {
+    std::vector<char> buf(32);
+    int32_t rc = llama_token_to_piece(
+        vocab_,
+        token,
+        buf.data(),
+        static_cast<int32_t>(buf.size()),
+        0,
+        true
+    );
+
+    if (rc < 0) {
+        buf.resize(static_cast<size_t>(-rc));
+        rc = llama_token_to_piece(
+            vocab_,
+            token,
+            buf.data(),
+            static_cast<int32_t>(buf.size()),
+            0,
             true
         );
     }
@@ -387,21 +425,57 @@ bool LlamaDecoder::decode_embedding_batch(
     return true;
 }
 
-llama_token LlamaDecoder::sample_greedy(llama_context * ctx) const {
+llama_token LlamaDecoder::sample_token(llama_context * ctx, float temperature, float * out_logprob) const {
     const float * logits = llama_get_logits_ith(ctx, -1);
     const int32_t vocab_size = llama_vocab_n_tokens(vocab_);
 
-    int32_t max_index = 0;
-    float max_logit = logits[0];
+    if (temperature <= 0.0f) {
+        int32_t max_index = 0;
+        float max_logit = logits[0];
 
-    for (int32_t i = 1; i < vocab_size; ++i) {
-        if (logits[i] > max_logit) {
-            max_logit = logits[i];
-            max_index = i;
+        for (int32_t i = 1; i < vocab_size; ++i) {
+            if (logits[i] > max_logit) {
+                max_logit = logits[i];
+                max_index = i;
+            }
         }
+
+        if (out_logprob != nullptr) {
+            double sum_exp = 0.0;
+            for (int32_t i = 0; i < vocab_size; ++i) {
+                sum_exp += std::exp(static_cast<double>(logits[i] - max_logit));
+            }
+            *out_logprob = -static_cast<float>(std::log(sum_exp));
+        }
+
+        return max_index;
     }
 
-    return max_index;
+    const float inv_temperature = 1.0f / temperature;
+    float max_scaled_logit = logits[0] * inv_temperature;
+    for (int32_t i = 1; i < vocab_size; ++i) {
+        max_scaled_logit = std::max(max_scaled_logit, logits[i] * inv_temperature);
+    }
+
+    std::vector<double> weights(static_cast<size_t>(vocab_size));
+    double sum_exp = 0.0;
+    for (int32_t i = 0; i < vocab_size; ++i) {
+        const double scaled = static_cast<double>(logits[i] * inv_temperature - max_scaled_logit);
+        const double weight = std::exp(scaled);
+        weights[static_cast<size_t>(i)] = weight;
+        sum_exp += weight;
+    }
+
+    thread_local std::mt19937 rng(std::random_device{}());
+    std::discrete_distribution<int32_t> dist(weights.begin(), weights.end());
+    const int32_t sampled = dist(rng);
+
+    if (out_logprob != nullptr) {
+        const double chosen_prob = weights[static_cast<size_t>(sampled)] / sum_exp;
+        *out_logprob = static_cast<float>(std::log(std::max(chosen_prob, std::numeric_limits<double>::min())));
+    }
+
+    return sampled;
 }
 
 } // namespace q3asr

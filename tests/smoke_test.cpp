@@ -26,6 +26,8 @@ void capture_stream_callback(const char * raw_text, void * user_data) {
 
 int main(int argc, char ** argv) {
     q3asr_context_params ctx_params = q3asr_context_default_params();
+    q3asr_aligner_context_params aligner_params = q3asr_aligner_context_default_params();
+    q3asr_transcribe_params tx_params = q3asr_transcribe_default_params();
     std::string audio_path;
     std::string expect_substring;
     std::string expect_language;
@@ -38,8 +40,19 @@ int main(int argc, char ** argv) {
             ctx_params.text_model_path = argv[++i];
         } else if (std::strcmp(argv[i], "--mmproj-model") == 0 && i + 1 < argc) {
             ctx_params.mmproj_model_path = argv[++i];
+        } else if (std::strcmp(argv[i], "--aligner-model") == 0 && i + 1 < argc) {
+            aligner_params.aligner_model_path = argv[++i];
         } else if (std::strcmp(argv[i], "--audio") == 0 && i + 1 < argc) {
             audio_path = argv[++i];
+        } else if (std::strcmp(argv[i], "--audio-chunk-sec") == 0 && i + 1 < argc) {
+            // Keep the CLI/test surface aligned with the library surface for chunked long-audio transcription.
+            // The default overlap is applied in the same way as the CLI.
+            // NOLINTNEXTLINE(cert-err34-c)
+            // std::strtof is sufficient here because this is a small argv-only test harness.
+            tx_params.max_audio_chunk_seconds = std::strtof(argv[++i], nullptr);
+        } else if (std::strcmp(argv[i], "--temp") == 0 && i + 1 < argc) {
+            // NOLINTNEXTLINE(cert-err34-c)
+            tx_params.temperature = std::strtof(argv[++i], nullptr);
         } else if (std::strcmp(argv[i], "--expect-substring") == 0 && i + 1 < argc) {
             expect_substring = argv[++i];
         } else if (std::strcmp(argv[i], "--expect-language") == 0 && i + 1 < argc) {
@@ -74,8 +87,31 @@ int main(int argc, char ** argv) {
     }
 
     q3asr_transcribe_result result = {};
-    q3asr_transcribe_params tx_params = q3asr_transcribe_default_params();
     StreamCapture stream_capture;
+    q3asr_aligner_context * aligner_ctx = nullptr;
+    if (aligner_params.aligner_model_path != nullptr) {
+        aligner_ctx = q3asr_aligner_context_create(&aligner_params);
+        if (aligner_ctx == nullptr) {
+            std::cerr << "Failed to create q3asr aligner context\n";
+            q3asr_context_destroy(ctx);
+            return 1;
+        }
+        if (*q3asr_aligner_context_last_error(aligner_ctx) != '\0') {
+            std::cerr << q3asr_aligner_context_last_error(aligner_ctx) << "\n";
+            q3asr_aligner_context_destroy(aligner_ctx);
+            q3asr_context_destroy(ctx);
+            return 1;
+        }
+
+        tx_params.aligner_context = aligner_ctx;
+        if (tx_params.max_audio_chunk_seconds <= 0.0f) {
+            tx_params.max_audio_chunk_seconds = 180.0f;
+        }
+        if (tx_params.audio_chunk_overlap_seconds <= 0.0f) {
+            tx_params.audio_chunk_overlap_seconds = 5.0f;
+        }
+    }
+
     if (capture_stream || expect_stream_calls_at_least > 0) {
         tx_params.raw_text_callback = capture_stream_callback;
         tx_params.raw_text_callback_user_data = &stream_capture;
@@ -83,6 +119,9 @@ int main(int argc, char ** argv) {
 
     if (!q3asr_transcribe_wav_file(ctx, audio_path.c_str(), &tx_params, &result)) {
         std::cerr << q3asr_context_last_error(ctx) << "\n";
+        if (aligner_ctx != nullptr) {
+            q3asr_aligner_context_destroy(aligner_ctx);
+        }
         q3asr_context_destroy(ctx);
         return 1;
     }
@@ -114,6 +153,9 @@ int main(int argc, char ** argv) {
     }
 
     q3asr_transcribe_result_clear(&result);
+    if (aligner_ctx != nullptr) {
+        q3asr_aligner_context_destroy(aligner_ctx);
+    }
     q3asr_context_destroy(ctx);
     return ok ? 0 : 1;
 }

@@ -41,6 +41,18 @@ struct align_runtime_params {
     float min_chunk_window_ms = 100.0f;
 };
 
+struct split_audio_chunk {
+    std::vector<float> samples;
+    int original_n_samples = 0;
+    float offset_sec = 0.0f;
+};
+
+struct normalized_word_span {
+    std::string text;
+    size_t byte_start = 0;
+    size_t byte_end = 0;
+};
+
 struct forced_aligner_hparams {
     int32_t audio_encoder_layers = 24;
     int32_t audio_d_model = 1024;
@@ -177,6 +189,7 @@ public:
 
     const std::string & error() const { return error_msg_; }
     bool is_loaded() const { return model_loaded_; }
+    std::vector<normalized_word_span> normalize_with_spans(const std::string & text, const std::string & language) const;
 
 private:
     bool parse_hparams(gguf_context * ctx);
@@ -212,6 +225,12 @@ private:
 };
 
 void free_forced_aligner_model(forced_aligner_model & model);
+std::vector<split_audio_chunk> split_audio_into_chunks(
+    const float * samples,
+    int n_samples,
+    int sample_rate,
+    const align_runtime_params & params
+);
 
 } // namespace q3asr
 

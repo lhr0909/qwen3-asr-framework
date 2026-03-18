@@ -17,6 +17,7 @@ This is not a finished product yet. The encoder and decoder path runs end to end
 
 - One-shot transcription works with local split GGUF weights.
 - Raw decoder text can now be streamed token-by-token through the C API callback and the CLI `--stream-raw` mode.
+- Long-audio transcription now has an aligner-backed chunked mode with bounded decoder windows and forced-aligner-owned span merging.
 - The public API supports:
   - `q3asr_transcribe_wav_file()`
   - `q3asr_transcribe_pcm_f32()`
@@ -25,6 +26,7 @@ This is not a finished product yet. The encoder and decoder path runs end to end
   - `q3asr_align_wav_file_ex()`
   - `q3asr_align_pcm_f32_ex()`
 - The CLI supports direct wav-file transcription through `q3asr-cli`.
+- The CLI can transcribe long audio continuously when you provide `--aligner-model` plus `--audio-chunk-sec`.
 - The CLI also supports direct forced alignment with a local aligner GGUF through `--aligner-model` plus either `--align-text` or `--align-text-file`.
 - The forced aligner now follows the Python timestamping reference at the audio-chunk level:
   - default `180s` max chunk length
@@ -43,9 +45,9 @@ Current limitations:
 
 - input must already be `16 kHz`
 - wav parsing supports PCM and IEEE-float wav, but there is no resampler yet
-- the current "streaming" support is decoder token streaming only, not a full push-audio session API
-- there is no active long-audio transcription chunking/session path right now; very long transcription remains deferred until a better design lands
+- the current "streaming" support is still one-shot decoder token streaming only; chunked long-audio transcription commits merged text per chunk rather than live token-by-token output
 - forced-align long-audio chunking currently assigns transcript ownership over normalized aligner units by duration, not over punctuation-preserving raw text spans
+- long-audio transcription merging maps aligner-owned normalized units back into decoder text spans, but it is still heuristic and not yet exact-parity on every boundary
 - the forced aligner currently targets Python parity first for English and Chinese; Japanese tokenization is still a best-effort fallback, not a `nagisa`-equivalent port
 
 ## Architecture
@@ -72,6 +74,7 @@ The runtime is split into five main pieces:
    - Owns the public C API.
    - Connects wav loading, mel computation, encoder execution, decoder execution, and transcript parsing.
    - Parses raw model output such as `language English<asr_text>...` into structured fields.
+   - Owns the aligner-backed long-audio transcription stitcher.
 
 5. `src/forced_aligner.cpp`
    - Loads the local forced-aligner GGUF directly through ggml/GGUF metadata.
@@ -149,10 +152,25 @@ Example:
   --show-raw
 ```
 
+Long-audio transcription example:
+
+```sh
+./build/q3asr-cli \
+  --text-model models/gguf/Qwen3-ASR-1.7B-text-Q8_0.gguf \
+  --mmproj-model models/gguf/Qwen3-ASR-1.7B-mmproj.gguf \
+  --aligner-model models/gguf/qwen3-forced-aligner-0.6b-f16.gguf \
+  --audio testdata/long-audio.wav \
+  --audio-chunk-sec 180 \
+  --max-tokens 1024 \
+  --show-raw
+```
+
 Useful CLI flags:
 
 - `--language <name>`: force a language hint
+- `--audio-chunk-sec <sec>`: max audio seconds per transcription chunk when using `--aligner-model`
 - `--max-tokens <n>`: cap decoder output length
+- `--temp <value>`: decoder temperature, defaults to `0` for greedy decode
 - `--threads <n>`: mel + decoder worker count
 - `--batch <n>`: decoder batch size
 - `--ctx <n>`: decoder context size
@@ -215,7 +233,14 @@ ctx_params.mmproj_model_path = ".../Qwen3-ASR-1.7B-mmproj.gguf";
 
 q3asr_context * ctx = q3asr_context_create(&ctx_params);
 
+q3asr_aligner_context_params align_ctx_params = q3asr_aligner_context_default_params();
+align_ctx_params.aligner_model_path = ".../qwen3-forced-aligner-0.6b-f16.gguf";
+q3asr_aligner_context * aligner = q3asr_aligner_context_create(&align_ctx_params);
+
 q3asr_transcribe_params tx_params = q3asr_transcribe_default_params();
+tx_params.aligner_context = aligner;
+tx_params.max_audio_chunk_seconds = 180.0f;
+tx_params.audio_chunk_overlap_seconds = 5.0f;
 q3asr_transcribe_result result = {0};
 
 if (q3asr_transcribe_wav_file(ctx, "input.wav", &tx_params, &result)) {
@@ -223,6 +248,7 @@ if (q3asr_transcribe_wav_file(ctx, "input.wav", &tx_params, &result)) {
 }
 
 q3asr_transcribe_result_clear(&result);
+q3asr_aligner_context_destroy(aligner);
 q3asr_context_destroy(ctx);
 ```
 
@@ -271,6 +297,9 @@ The current tests are asset-gated:
   - Verifies detected language `English` and the `/r/apple` substring.
 - `q3asr-streaming-regression`
   - Verifies the raw-text callback fires multiple times on the English regression sample and that the last streamed raw text equals the final raw transcript.
+- `q3asr-long-transcribe-regression`
+  - Forces the English sample through the aligner-backed chunked transcription path.
+  - Verifies the merged result stays continuous and preserves the `/r/apple` phrase.
 - `q3asr-aligner-english`
   - Uses the local forced-aligner GGUF and `testdata/q3asr-input.wav`.
   - Verifies the current Python-parity English unitization: `10` items including `rapple`.
@@ -300,12 +329,14 @@ See `AGENTS.md` for the preferred validation workflow and project-specific const
 ## Notes And Known Issues
 
 - `clip.audio.conv_chunksize` in the mmproj GGUF is not the encoder time-axis split. The active code correctly derives the time chunk from `n_window * 2`.
-- Long-audio/session support was intentionally rolled back for now. The current library path is one-shot transcription plus decoder token streaming only.
-- The forced aligner now lives in this repo as a separate subsystem, and it now has its own Python-style long-audio chunker, but it is still not tied into any transcription overlap-merging policy.
+- The old naive long-audio transcription path is still gone. The new long-audio transcription mode exists only when a forced aligner is available to own the merge.
+- The forced aligner now lives in this repo as a separate subsystem, and it now also drives the transcription-side long-audio stitcher through overlapped decode windows plus timestamp-owned middle spans.
+- The stitcher now also uses decoder token logprobs inside a small overlap band around each chunk boundary to arbitrate which neighboring window owns that raw-text span.
 - The current forced-aligner tokenizer path is designed around Python parity for English/Chinese/Korean normalization, but Japanese is still a fallback heuristic rather than a port of Python's `nagisa` segmentation.
 - The repo now includes a copied long fixture at `testdata/long-audio.wav` plus a raw transcript file at `testdata/long-audio-result.txt` for manual alignment experiments.
 - The new `--align-text-file` CLI path plus default chunked alignment makes those experiments practical; the 15-minute fixture completed locally in about `148s` and produced `3002` monotonic aligned units.
 - The current long-audio aligner assigns chunk ownership over normalized lexical units by duration. That is sufficient for timestamp experiments, but it is not yet the final punctuation-preserving merge policy.
+- The end-to-end 15-minute transcription path completed locally in about `249s` with `--audio-chunk-sec 180 --max-tokens 1024`, produced one continuous `language English<asr_text>...` block, and the stitcher now arbitrates boundary bands with decoder confidence, but the result still drifted at the tail (`600.` vs. the reference `600 bucks.`).
 - The Python vLLM streaming path is still the reference for future session behavior: it re-feeds accumulated audio and appends a rollback-trimmed text prefix on each step.
 - Compatibility symlinks were left in the sibling reference repos after artifact migration, but this repo is now the canonical home for the GGUF models, test wavs, and the upstream `llama.cpp` checkout.
 - Long-audio behavior, full streaming/session support, and resampling are still pending.

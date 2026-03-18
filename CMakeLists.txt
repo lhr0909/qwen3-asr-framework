@@ -180,6 +180,23 @@ if(Q3ASR_BUILD_TESTS)
                     --expect-stream-calls-at-least 2
                     --expect-stream-equals-raw
             )
+
+            if(EXISTS "${Q3ASR_TEST_ALIGNER_MODEL}")
+                add_test(
+                    NAME q3asr-long-transcribe-regression
+                    COMMAND q3asr-smoke-test
+                        --text-model "${Q3ASR_TEST_TEXT_MODEL}"
+                        --mmproj-model "${Q3ASR_TEST_MMPROJ_MODEL}"
+                        --aligner-model "${Q3ASR_TEST_ALIGNER_MODEL}"
+                        --audio "${Q3ASR_TEST_AUDIO_ENGLISH}"
+                        --audio-chunk-sec 6
+                        --expect-language "English"
+                        --expect-substring "/r/apple"
+                        --capture-stream
+                        --expect-stream-calls-at-least 2
+                        --expect-stream-equals-raw
+                )
+            endif()
         endif()
 
         if(

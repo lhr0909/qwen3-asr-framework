@@ -107,7 +107,9 @@ void print_usage(const char * program) {
         << "  " << program << " --aligner-model <path> --align-text-file <path> --audio <wav> [options]\n"
         << "Options:\n"
         << "  --language <name>   Force a language hint\n"
+        << "  --audio-chunk-sec <sec>  Max audio seconds per transcription chunk when using --aligner-model\n"
         << "  --max-tokens <n>    Maximum number of decoder tokens (default: 256)\n"
+        << "  --temp <value>      Decoder temperature (default: 0, greedy)\n"
         << "  --align-max-chunk-sec <sec>  Max audio seconds per forced-align chunk (default: 180, 0 disables chunking)\n"
         << "  --threads <n>       Thread count for mel + decoder work\n"
         << "  --batch <n>         Decoder batch size (default: 512)\n"
@@ -152,10 +154,14 @@ int main(int argc, char ** argv) {
             align_text_file = argv[++i];
         } else if (std::strcmp(arg, "--language") == 0 && i + 1 < argc) {
             tx_params.language_hint = argv[++i];
+        } else if (std::strcmp(arg, "--audio-chunk-sec") == 0 && i + 1 < argc) {
+            tx_params.max_audio_chunk_seconds = std::strtof(argv[++i], nullptr);
         } else if (std::strcmp(arg, "--align-max-chunk-sec") == 0 && i + 1 < argc) {
             align_params.max_chunk_seconds = std::strtof(argv[++i], nullptr);
         } else if (std::strcmp(arg, "--max-tokens") == 0 && i + 1 < argc) {
             tx_params.max_tokens = std::atoi(argv[++i]);
+        } else if (std::strcmp(arg, "--temp") == 0 && i + 1 < argc) {
+            tx_params.temperature = std::strtof(argv[++i], nullptr);
         } else if (std::strcmp(arg, "--threads") == 0 && i + 1 < argc) {
             ctx_params.n_threads = std::atoi(argv[++i]);
             aligner_params.n_threads = ctx_params.n_threads;
@@ -182,13 +188,14 @@ int main(int argc, char ** argv) {
         }
     }
 
-    const bool transcribe_mode =
+    const bool has_transcribe_models =
         ctx_params.text_model_path != nullptr ||
         ctx_params.mmproj_model_path != nullptr;
-    const bool align_mode =
-        aligner_params.aligner_model_path != nullptr ||
+    const bool has_align_inputs =
         !align_text.empty() ||
         !align_text_file.empty();
+    const bool transcribe_mode = has_transcribe_models;
+    const bool align_mode = !has_transcribe_models && (aligner_params.aligner_model_path != nullptr || has_align_inputs);
 
     if (audio_path.empty() || (transcribe_mode == align_mode)) {
         print_usage(argv[0]);
@@ -196,8 +203,16 @@ int main(int argc, char ** argv) {
     }
 
     if (transcribe_mode) {
+        if (has_align_inputs) {
+            print_usage(argv[0]);
+            return 1;
+        }
         if (ctx_params.text_model_path == nullptr || ctx_params.mmproj_model_path == nullptr) {
             print_usage(argv[0]);
+            return 1;
+        }
+        if (tx_params.max_audio_chunk_seconds > 0.0f && aligner_params.aligner_model_path == nullptr) {
+            std::cerr << "--audio-chunk-sec requires --aligner-model in transcription mode\n";
             return 1;
         }
 
@@ -213,6 +228,30 @@ int main(int argc, char ** argv) {
             return 1;
         }
 
+        q3asr_aligner_context * aligner_ctx = nullptr;
+        if (aligner_params.aligner_model_path != nullptr) {
+            aligner_ctx = q3asr_aligner_context_create(&aligner_params);
+            if (aligner_ctx == nullptr) {
+                std::cerr << "Failed to create the q3asr aligner context\n";
+                q3asr_context_destroy(ctx);
+                return 1;
+            }
+            if (*q3asr_aligner_context_last_error(aligner_ctx) != '\0') {
+                std::cerr << q3asr_aligner_context_last_error(aligner_ctx) << "\n";
+                q3asr_aligner_context_destroy(aligner_ctx);
+                q3asr_context_destroy(ctx);
+                return 1;
+            }
+
+            tx_params.aligner_context = aligner_ctx;
+            if (tx_params.max_audio_chunk_seconds <= 0.0f) {
+                tx_params.max_audio_chunk_seconds = 180.0f;
+            }
+            if (tx_params.audio_chunk_overlap_seconds <= 0.0f) {
+                tx_params.audio_chunk_overlap_seconds = 5.0f;
+            }
+        }
+
         if (stream_raw) {
             tx_params.raw_text_callback = raw_stream_callback;
             tx_params.raw_text_callback_user_data = &raw_stream_state;
@@ -222,6 +261,9 @@ int main(int argc, char ** argv) {
         const int ok = q3asr_transcribe_wav_file(ctx, audio_path.c_str(), &tx_params, &result);
         if (!ok) {
             std::cerr << q3asr_context_last_error(ctx) << "\n";
+            if (aligner_ctx != nullptr) {
+                q3asr_aligner_context_destroy(aligner_ctx);
+            }
             q3asr_context_destroy(ctx);
             return 1;
         }
@@ -244,6 +286,9 @@ int main(int argc, char ** argv) {
         }
 
         q3asr_transcribe_result_clear(&result);
+        if (aligner_ctx != nullptr) {
+            q3asr_aligner_context_destroy(aligner_ctx);
+        }
         q3asr_context_destroy(ctx);
         return 0;
     }

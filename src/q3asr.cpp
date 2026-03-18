@@ -11,11 +11,17 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <string>
 #include <thread>
 #include <utility>
 #include <vector>
+
+struct q3asr_aligner_context {
+    std::unique_ptr<q3asr::ForcedAligner> aligner;
+    std::string last_error;
+};
 
 namespace q3asr {
 
@@ -27,6 +33,29 @@ struct transcript_result {
     std::string raw_text;
     std::string language;
     std::string text;
+    std::vector<decoder_token_span> text_token_spans;
+};
+
+struct parsed_asr_output {
+    std::string language;
+    std::string text;
+    size_t text_byte_start = 0;
+};
+
+struct scored_fragment {
+    std::string text;
+    float avg_logprob = 0.0f;
+    bool has_confidence = false;
+};
+
+struct transcript_chunk_view {
+    transcript_result transcript;
+    alignment_result alignment;
+    std::vector<normalized_word_span> spans;
+    std::string language;
+    float window_start_sec = 0.0f;
+    float core_start_sec = 0.0f;
+    float core_end_sec = 0.0f;
 };
 
 class Recognizer {
@@ -79,6 +108,15 @@ public:
             };
         }
 
+        if (
+            params.aligner_context != nullptr &&
+            params.aligner_context->aligner != nullptr &&
+            params.max_audio_chunk_seconds > 0.0f &&
+            static_cast<float>(n_samples) / QWEN_SAMPLE_RATE > params.max_audio_chunk_seconds
+        ) {
+            return transcribe_long(samples, n_samples, params, language_hint, raw_text_callback, result);
+        }
+
         return transcribe_chunk(samples, n_samples, params, language_hint, raw_text_callback, result);
     }
 
@@ -109,21 +147,483 @@ private:
 
         decoder_transcribe_params decoder_params;
         decoder_params.max_tokens = params.max_tokens;
+        decoder_params.temperature = params.temperature;
         decoder_params.n_threads = params_.n_threads;
         decoder_params.n_batch = params_.n_batch;
         decoder_params.n_ctx = params_.n_ctx;
         decoder_params.language_hint = language_hint;
         decoder_params.raw_text_callback = raw_text_callback;
 
-        if (!decoder_.decode_audio_embeddings(audio_embeddings, decoder_params, result.raw_text)) {
+        std::vector<decoder_token_span> raw_token_spans;
+        if (!decoder_.decode_audio_embeddings(audio_embeddings, decoder_params, result.raw_text, &raw_token_spans)) {
             error_msg_ = decoder_.get_error();
             return false;
         }
 
         const auto parsed = parse_asr_output(result.raw_text, decoder_params.language_hint);
-        result.language = parsed.first;
-        result.text = parsed.second;
+        result.language = parsed.language;
+        result.text = parsed.text;
+        result.text_token_spans.clear();
+        result.text_token_spans.reserve(raw_token_spans.size());
+        for (const decoder_token_span & span : raw_token_spans) {
+            if (span.byte_end <= parsed.text_byte_start) {
+                continue;
+            }
+
+            const size_t clipped_start = std::max(span.byte_start, parsed.text_byte_start) - parsed.text_byte_start;
+            const size_t clipped_end = span.byte_end - parsed.text_byte_start;
+            if (clipped_end <= clipped_start) {
+                continue;
+            }
+
+            result.text_token_spans.push_back({clipped_start, clipped_end, span.logprob});
+        }
         return true;
+    }
+
+    bool transcribe_long(
+        const float * samples,
+        int n_samples,
+        const q3asr_transcribe_params & params,
+        const std::string & requested_language,
+        const std::function<void(const std::string &)> & raw_text_callback,
+        transcript_result & result
+    ) {
+        result = {};
+
+        if (params.aligner_context == nullptr || params.aligner_context->aligner == nullptr) {
+            error_msg_ = "Chunked long-audio transcription requires a loaded forced aligner context";
+            return false;
+        }
+
+        align_runtime_params split_params;
+        split_params.max_chunk_seconds = params.max_audio_chunk_seconds;
+        const std::vector<split_audio_chunk> core_chunks =
+            split_audio_into_chunks(samples, n_samples, QWEN_SAMPLE_RATE, split_params);
+        if (core_chunks.empty()) {
+            error_msg_ = "Failed to split long audio for chunked transcription";
+            return false;
+        }
+
+        q3asr_transcribe_params chunk_params = params;
+        chunk_params.aligner_context = nullptr;
+        chunk_params.max_audio_chunk_seconds = 0.0f;
+        chunk_params.audio_chunk_overlap_seconds = 0.0f;
+        chunk_params.raw_text_callback = nullptr;
+        chunk_params.raw_text_callback_user_data = nullptr;
+
+        align_runtime_params align_params;
+        align_params.max_chunk_seconds = std::max(
+            params.max_audio_chunk_seconds,
+            params.max_audio_chunk_seconds + 2.0f * std::max(0.0f, params.audio_chunk_overlap_seconds)
+        );
+
+        const float overlap_sec = std::max(0.0f, params.audio_chunk_overlap_seconds);
+        const int overlap_samples = static_cast<int>(std::lround(overlap_sec * QWEN_SAMPLE_RATE));
+        const float boundary_band_sec = overlap_sec > 0.0f
+            ? std::min(overlap_sec, std::max(0.75f, overlap_sec * 0.5f))
+            : 0.0f;
+        const float total_audio_sec = static_cast<float>(n_samples) / QWEN_SAMPLE_RATE;
+
+        std::string merged_text;
+        std::string resolved_language = requested_language;
+        std::string last_emitted_raw;
+        transcript_chunk_view previous_chunk;
+        bool have_previous_chunk = false;
+
+        const auto emit_progress = [&]() {
+            if (!raw_text_callback) {
+                return;
+            }
+
+            const std::string raw = build_raw_output(merged_text, resolved_language, requested_language);
+            if (raw != last_emitted_raw) {
+                raw_text_callback(raw);
+                last_emitted_raw = raw;
+            }
+        };
+
+        for (size_t i = 0; i < core_chunks.size(); ++i) {
+            const int core_start = static_cast<int>(std::lround(core_chunks[i].offset_sec * QWEN_SAMPLE_RATE));
+            const int core_end = std::min(n_samples, core_start + core_chunks[i].original_n_samples);
+            const int window_start = std::max(0, core_start - overlap_samples);
+            const int window_end = std::min(n_samples, core_end + overlap_samples);
+            const int window_len = std::max(0, window_end - window_start);
+            if (window_len <= 0) {
+                continue;
+            }
+
+            transcript_result chunk_result;
+            if (!transcribe_chunk(
+                    samples + window_start,
+                    window_len,
+                    chunk_params,
+                    resolved_language,
+                    {},
+                    chunk_result)) {
+                error_msg_ = "Chunked transcription failed for chunk " +
+                             std::to_string(i + 1) + "/" + std::to_string(core_chunks.size()) +
+                             ": " + error_msg_;
+                return false;
+            }
+
+            const std::string chunk_language =
+                !chunk_result.language.empty() ? chunk_result.language : resolved_language;
+            if (resolved_language.empty() && !chunk_language.empty()) {
+                resolved_language = chunk_language;
+            }
+
+            const alignment_result align_result = params.aligner_context->aligner->align(
+                samples + window_start,
+                window_len,
+                chunk_result.text,
+                chunk_language,
+                align_params
+            );
+            if (!align_result.success) {
+                error_msg_ = "Forced alignment failed for transcription chunk " +
+                             std::to_string(i + 1) + "/" + std::to_string(core_chunks.size()) +
+                             ": " + align_result.error_msg;
+                return false;
+            }
+
+            transcript_chunk_view current_chunk;
+            current_chunk.transcript = std::move(chunk_result);
+            current_chunk.alignment = std::move(align_result);
+            current_chunk.spans = params.aligner_context->aligner->normalize_with_spans(
+                current_chunk.transcript.text,
+                chunk_language
+            );
+            current_chunk.language = chunk_language;
+            current_chunk.window_start_sec = static_cast<float>(window_start) / QWEN_SAMPLE_RATE;
+            current_chunk.core_start_sec = static_cast<float>(core_start) / QWEN_SAMPLE_RATE;
+            current_chunk.core_end_sec = static_cast<float>(core_end) / QWEN_SAMPLE_RATE;
+
+            if (!have_previous_chunk) {
+                const bool is_last_chunk = i + 1 == core_chunks.size();
+                const float stable_end = is_last_chunk
+                    ? current_chunk.core_end_sec
+                    : std::max(current_chunk.core_start_sec, current_chunk.core_end_sec - boundary_band_sec);
+                const scored_fragment leading_fragment = extract_scored_fragment(
+                    current_chunk,
+                    current_chunk.core_start_sec,
+                    stable_end,
+                    is_last_chunk
+                );
+                append_text_fragment(merged_text, leading_fragment.text);
+                emit_progress();
+
+                if (is_last_chunk) {
+                    break;
+                }
+
+                previous_chunk = std::move(current_chunk);
+                have_previous_chunk = true;
+                continue;
+            }
+
+            const float boundary_time = previous_chunk.core_end_sec;
+            const float band_start = std::max(0.0f, boundary_time - boundary_band_sec);
+            const float band_end = std::min(total_audio_sec, boundary_time + boundary_band_sec);
+            if (band_end > band_start) {
+                const scored_fragment left_boundary = extract_scored_fragment(
+                    previous_chunk,
+                    band_start,
+                    band_end,
+                    false
+                );
+                const scored_fragment right_boundary = extract_scored_fragment(
+                    current_chunk,
+                    band_start,
+                    band_end,
+                    false
+                );
+                append_text_fragment(merged_text, choose_boundary_fragment(left_boundary, right_boundary).text);
+            }
+
+            const bool is_last_chunk = i + 1 == core_chunks.size();
+            const float stable_start = std::min(current_chunk.core_end_sec, current_chunk.core_start_sec + boundary_band_sec);
+            const float stable_end = is_last_chunk
+                ? current_chunk.core_end_sec
+                : std::max(current_chunk.core_start_sec, current_chunk.core_end_sec - boundary_band_sec);
+            const scored_fragment stable_fragment = extract_scored_fragment(
+                current_chunk,
+                stable_start,
+                stable_end,
+                is_last_chunk
+            );
+            append_text_fragment(merged_text, stable_fragment.text);
+            emit_progress();
+
+            previous_chunk = std::move(current_chunk);
+        }
+
+        result.language = resolved_language;
+        result.text = merged_text;
+        result.raw_text = build_raw_output(merged_text, resolved_language, requested_language);
+        return true;
+    }
+
+    static std::string trim_ascii(const std::string & value) {
+        size_t start = 0;
+        while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start])) != 0) {
+            ++start;
+        }
+
+        size_t end = value.size();
+        while (end > start && std::isspace(static_cast<unsigned char>(value[end - 1])) != 0) {
+            --end;
+        }
+
+        return value.substr(start, end - start);
+    }
+
+    static bool is_ascii_punct_no_space_before(char ch) {
+        switch (ch) {
+            case ',':
+            case '.':
+            case ';':
+            case ':':
+            case '!':
+            case '?':
+            case ')':
+            case ']':
+            case '}':
+            case '%':
+            case '"':
+            case '\'':
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    static bool is_ascii_punct_no_space_after(char ch) {
+        switch (ch) {
+            case '(':
+            case '[':
+            case '{':
+            case '"':
+            case '\'':
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    static void append_text_fragment(std::string & merged_text, const std::string & fragment) {
+        const std::string trimmed = trim_ascii(fragment);
+        if (trimmed.empty()) {
+            return;
+        }
+
+        if (merged_text.empty()) {
+            merged_text = trimmed;
+            return;
+        }
+
+        const char last = merged_text.back();
+        const char first = trimmed.front();
+        const bool last_space = std::isspace(static_cast<unsigned char>(last)) != 0;
+        const bool first_space = std::isspace(static_cast<unsigned char>(first)) != 0;
+
+        if (!last_space && !first_space && !is_ascii_punct_no_space_before(first) && !is_ascii_punct_no_space_after(last)) {
+            merged_text.push_back(' ');
+        }
+
+        merged_text += trimmed;
+    }
+
+    static std::string build_raw_output(
+        const std::string & merged_text,
+        const std::string & resolved_language,
+        const std::string & requested_language
+    ) {
+        if (!requested_language.empty() || resolved_language.empty()) {
+            return merged_text;
+        }
+
+        return "language " + resolved_language + "<asr_text>" + merged_text;
+    }
+
+    static std::pair<size_t, size_t> trim_ascii_bounds(
+        const std::string & value,
+        size_t start,
+        size_t end
+    ) {
+        start = std::min(start, value.size());
+        end = std::min(end, value.size());
+        while (start < end && std::isspace(static_cast<unsigned char>(value[start])) != 0) {
+            ++start;
+        }
+        while (end > start && std::isspace(static_cast<unsigned char>(value[end - 1])) != 0) {
+            --end;
+        }
+        return {start, end};
+    }
+
+    static std::string join_normalized_units(const std::vector<std::string> & units, const std::string & language) {
+        const std::string normalized_language = normalize_language(language);
+        const bool cjk_join = normalized_language == "Chinese" || normalized_language == "Japanese";
+
+        std::string out;
+        for (size_t i = 0; i < units.size(); ++i) {
+            if (i > 0 && !cjk_join) {
+                out.push_back(' ');
+            }
+            out += units[i];
+        }
+        return out;
+    }
+
+    static float average_logprob_for_range(
+        const std::vector<decoder_token_span> & spans,
+        size_t byte_start,
+        size_t byte_end,
+        bool & has_confidence
+    ) {
+        has_confidence = false;
+        if (byte_end <= byte_start) {
+            return 0.0f;
+        }
+
+        double weighted_sum = 0.0;
+        size_t weighted_bytes = 0;
+        for (const decoder_token_span & span : spans) {
+            const size_t overlap_start = std::max(byte_start, span.byte_start);
+            const size_t overlap_end = std::min(byte_end, span.byte_end);
+            if (overlap_end <= overlap_start) {
+                continue;
+            }
+
+            const size_t overlap_bytes = overlap_end - overlap_start;
+            weighted_sum += static_cast<double>(overlap_bytes) * span.logprob;
+            weighted_bytes += overlap_bytes;
+        }
+
+        if (weighted_bytes == 0) {
+            return 0.0f;
+        }
+
+        has_confidence = true;
+        return static_cast<float>(weighted_sum / static_cast<double>(weighted_bytes));
+    }
+
+    static scored_fragment extract_scored_fragment(
+        const transcript_chunk_view & chunk,
+        float segment_start_sec,
+        float segment_end_sec,
+        bool include_end
+    ) {
+        const std::string & chunk_text = chunk.transcript.text;
+        if (chunk_text.empty()) {
+            return {};
+        }
+
+        if (segment_end_sec <= segment_start_sec + 1.0e-6f) {
+            return {};
+        }
+
+        if (chunk.alignment.items.empty()) {
+            scored_fragment out;
+            const auto [trimmed_start, trimmed_end] = trim_ascii_bounds(chunk_text, 0, chunk_text.size());
+            if (trimmed_end > trimmed_start) {
+                out.text = chunk_text.substr(trimmed_start, trimmed_end - trimmed_start);
+                out.avg_logprob = average_logprob_for_range(
+                    chunk.transcript.text_token_spans,
+                    trimmed_start,
+                    trimmed_end,
+                    out.has_confidence
+                );
+            }
+            return out;
+        }
+
+        size_t first_keep = chunk.alignment.items.size();
+        size_t last_keep = chunk.alignment.items.size();
+        for (size_t i = 0; i < chunk.alignment.items.size(); ++i) {
+            const float midpoint =
+                chunk.window_start_sec + 0.5f * (chunk.alignment.items[i].start_time + chunk.alignment.items[i].end_time);
+            const bool keep = include_end
+                ? (midpoint >= segment_start_sec && midpoint <= segment_end_sec + 1.0e-3f)
+                : (midpoint >= segment_start_sec && midpoint < segment_end_sec);
+            if (!keep) {
+                continue;
+            }
+
+            if (first_keep == chunk.alignment.items.size()) {
+                first_keep = i;
+            }
+            last_keep = i;
+        }
+
+        scored_fragment out;
+        if (first_keep == chunk.alignment.items.size()) {
+            return out;
+        }
+
+        if (chunk.spans.size() == chunk.alignment.items.size()) {
+            const size_t raw_start = std::min(chunk.spans[first_keep].byte_start, chunk_text.size());
+            const size_t raw_end = std::min(chunk.spans[last_keep].byte_end, chunk_text.size());
+            const auto [trimmed_start, trimmed_end] = trim_ascii_bounds(chunk_text, raw_start, raw_end);
+            if (trimmed_end > trimmed_start) {
+                out.text = chunk_text.substr(trimmed_start, trimmed_end - trimmed_start);
+                out.avg_logprob = average_logprob_for_range(
+                    chunk.transcript.text_token_spans,
+                    trimmed_start,
+                    trimmed_end,
+                    out.has_confidence
+                );
+                return out;
+            }
+        }
+
+        std::vector<std::string> fallback_units;
+        fallback_units.reserve(last_keep - first_keep + 1);
+        for (size_t i = first_keep; i <= last_keep; ++i) {
+            fallback_units.push_back(chunk.alignment.items[i].text);
+        }
+        out.text = join_normalized_units(fallback_units, chunk.language);
+        return out;
+    }
+
+    static bool starts_with(const std::string & value, const std::string & prefix) {
+        return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
+    }
+
+    static const scored_fragment & choose_boundary_fragment(
+        const scored_fragment & left,
+        const scored_fragment & right
+    ) {
+        if (left.text.empty()) {
+            return right;
+        }
+        if (right.text.empty()) {
+            return left;
+        }
+
+        const std::string left_trimmed = trim_ascii(left.text);
+        const std::string right_trimmed = trim_ascii(right.text);
+
+        if (left.has_confidence && right.has_confidence) {
+            const float delta = left.avg_logprob - right.avg_logprob;
+            if (left_trimmed == right_trimmed) {
+                return delta >= 0.0f ? left : right;
+            }
+            if (starts_with(right_trimmed, left_trimmed) && delta > -0.35f) {
+                return right;
+            }
+            if (starts_with(left_trimmed, right_trimmed) && delta < 0.35f) {
+                return left;
+            }
+            if (std::fabs(delta) > 0.05f) {
+                return delta > 0.0f ? left : right;
+            }
+        } else if (left.has_confidence != right.has_confidence) {
+            return left.has_confidence ? left : right;
+        }
+
+        return left_trimmed.size() >= right_trimmed.size() ? left : right;
     }
 
     static std::string normalize_language(const std::string & language) {
@@ -151,26 +651,33 @@ private:
         return trimmed;
     }
 
-    static std::pair<std::string, std::string> parse_asr_output(
+    static parsed_asr_output parse_asr_output(
         const std::string & raw_text,
         const std::string & forced_language
     ) {
         if (raw_text.empty()) {
-            return {"", ""};
+            return {};
         }
 
         if (!forced_language.empty()) {
-            return {forced_language, raw_text};
+            parsed_asr_output out;
+            out.language = forced_language;
+            out.text = raw_text;
+            return out;
         }
 
         const std::string tag = "<asr_text>";
         const size_t tag_pos = raw_text.find(tag);
         if (tag_pos == std::string::npos) {
-            return {"", raw_text};
+            parsed_asr_output out;
+            out.text = raw_text;
+            return out;
         }
 
         const std::string meta = raw_text.substr(0, tag_pos);
-        const std::string text = raw_text.substr(tag_pos + tag.size());
+        parsed_asr_output out;
+        out.text_byte_start = tag_pos + tag.size();
+        out.text = raw_text.substr(out.text_byte_start);
 
         std::string language;
         const std::string prefix = "language ";
@@ -200,7 +707,8 @@ private:
             language.clear();
         }
 
-        return {language, text};
+        out.language = language;
+        return out;
     }
 
     q3asr_context_params params_{};
@@ -214,11 +722,6 @@ private:
 
 struct q3asr_context {
     std::unique_ptr<q3asr::Recognizer> recognizer;
-    std::string last_error;
-};
-
-struct q3asr_aligner_context {
-    std::unique_ptr<q3asr::ForcedAligner> aligner;
     std::string last_error;
 };
 
@@ -260,6 +763,10 @@ q3asr_aligner_context_params q3asr_aligner_context_default_params(void) {
 q3asr_transcribe_params q3asr_transcribe_default_params(void) {
     q3asr_transcribe_params params = {};
     params.max_tokens = 256;
+    params.temperature = 0.0f;
+    params.aligner_context = nullptr;
+    params.max_audio_chunk_seconds = 0.0f;
+    params.audio_chunk_overlap_seconds = 0.0f;
     params.raw_text_callback = nullptr;
     params.raw_text_callback_user_data = nullptr;
     return params;

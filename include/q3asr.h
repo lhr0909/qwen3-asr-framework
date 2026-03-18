@@ -31,6 +31,10 @@ typedef struct {
 typedef struct {
     const char * language_hint;
     int max_tokens;
+    float temperature;
+    q3asr_aligner_context * aligner_context;
+    float max_audio_chunk_seconds;
+    float audio_chunk_overlap_seconds;
     q3asr_raw_stream_callback raw_text_callback;
     void * raw_text_callback_user_data;
 } q3asr_transcribe_params;
