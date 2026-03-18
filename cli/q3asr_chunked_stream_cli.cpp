@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <string>
 
@@ -12,6 +13,17 @@
 #endif
 
 namespace {
+
+bool read_text_file(const std::string & path, std::string & out, std::string & error) {
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        error = "Failed to open text file: " + path;
+        return false;
+    }
+
+    out.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    return true;
+}
 
 struct ConsoleState {
     bool use_ansi = false;
@@ -99,6 +111,8 @@ void print_usage(const char * program) {
         << "  " << program << " --text-model <path> --mmproj-model <path> --aligner-model <path> --audio <wav> [options]\n"
         << "Options:\n"
         << "  --language <name>       Force a language hint\n"
+        << "  --context <text>        Prompt context / hotword hint text\n"
+        << "  --context-file <p>      Read prompt context from a text file\n"
         << "  --audio-chunk-sec <sec> Max audio seconds per transcription chunk (default: 180)\n"
         << "  --audio-overlap-sec <sec> Overlap seconds between chunk decode windows (default: 5)\n"
         << "  --max-tokens <n>        Maximum number of decoder tokens (default: 256)\n"
@@ -117,6 +131,10 @@ int main(int argc, char ** argv) {
     q3asr_aligner_context_params aligner_params = q3asr_aligner_context_default_params();
     q3asr_transcribe_params tx_params = q3asr_transcribe_default_params();
     std::string audio_path;
+    std::string context;
+    std::string context_file;
+    bool has_context_arg = false;
+    bool has_context_file_arg = false;
     bool show_raw = false;
 
     for (int i = 1; i < argc; ++i) {
@@ -131,6 +149,12 @@ int main(int argc, char ** argv) {
             audio_path = argv[++i];
         } else if (std::strcmp(arg, "--language") == 0 && i + 1 < argc) {
             tx_params.language_hint = argv[++i];
+        } else if (std::strcmp(arg, "--context") == 0 && i + 1 < argc) {
+            context = argv[++i];
+            has_context_arg = true;
+        } else if (std::strcmp(arg, "--context-file") == 0 && i + 1 < argc) {
+            context_file = argv[++i];
+            has_context_file_arg = true;
         } else if (std::strcmp(arg, "--audio-chunk-sec") == 0 && i + 1 < argc) {
             tx_params.max_audio_chunk_seconds = std::strtof(argv[++i], nullptr);
         } else if (std::strcmp(arg, "--audio-overlap-sec") == 0 && i + 1 < argc) {
@@ -159,6 +183,17 @@ int main(int argc, char ** argv) {
             print_usage(argv[0]);
             return 1;
         }
+    }
+
+    if (has_context_arg && has_context_file_arg) {
+        std::cerr << "Use only one of --context or --context-file\n";
+        return 1;
+    }
+
+    std::string text_file_error;
+    if (has_context_file_arg && !read_text_file(context_file, context, text_file_error)) {
+        std::cerr << text_file_error << "\n";
+        return 1;
     }
 
     if (
@@ -208,6 +243,7 @@ int main(int argc, char ** argv) {
 #endif
 
     tx_params.aligner_context = aligner_ctx;
+    tx_params.context = context.c_str();
     tx_params.progress_callback = progress_callback;
     tx_params.progress_callback_user_data = &console_state;
 

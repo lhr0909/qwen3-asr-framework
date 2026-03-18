@@ -2,6 +2,46 @@
 
 ## 2026-03-18
 
+### Context Follow-Up
+
+- Added Python-style prompt context to the transcription API:
+  - `q3asr_transcribe_params.context`
+- Threaded that context into the decoder prompt builder in `src/decoder_llama.cpp`:
+  - the system message now mirrors the Python reference shape
+  - there is still a single audio user turn plus the existing `language ...<asr_text>` suffix behavior
+- Extended the CLIs with:
+  - `q3asr-cli --context <text>`
+  - `q3asr-cli --context-file <path>`
+  - `q3asr-chunk-stream-cli --context <text>`
+  - `q3asr-chunk-stream-cli --context-file <path>`
+- Extended the smoke harness with:
+  - `--context <text>`
+  - `--context-file <path>`
+- Added a prompt-context regression:
+  - `q3asr-context-regression`
+
+### Context Validation
+
+- Rebuilt successfully:
+  - `cmake --build build -j`
+- Full suite still passes after the prompt change:
+  - `ctest --test-dir build --output-on-failure`
+  - observed: `8/8` passing
+- Manual CLI spot check with inline context:
+  - `./build/q3asr-cli --text-model models/gguf/Qwen3-ASR-1.7B-text-Q8_0.gguf --mmproj-model models/gguf/Qwen3-ASR-1.7B-mmproj.gguf --audio testdata/q3asr-input.wav --context "PSPDFKit Claudebot /r/apple" --show-raw`
+  - observed: same expected `/r/apple` transcript
+- Manual CLI spot check with context file:
+  - `./build/q3asr-cli --text-model models/gguf/Qwen3-ASR-1.7B-text-Q8_0.gguf --mmproj-model models/gguf/Qwen3-ASR-1.7B-mmproj.gguf --audio testdata/q3asr-input.wav --context-file /tmp/q3asr-context.txt --show-raw`
+  - observed: same expected `/r/apple` transcript
+
+### Context Remaining Work
+
+- This matches the Python reference mechanism for hint injection, but it is still prompt conditioning, not decoder logit biasing.
+- The public C API still takes a single context string because this repo only exposes one-audio transcription calls today.
+- If multi-audio batching is added later, context should follow the Python semantics:
+  - one context string per input audio
+  - broadcast a scalar string across the batch
+
 ### Goal
 
 Follow the official Python timestamping path closely enough to make long-audio forced alignment practical in this repo.

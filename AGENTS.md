@@ -182,6 +182,17 @@ Chunked console-stream spot check:
   --audio-chunk-sec 6
 ```
 
+Prompt-context spot check:
+
+```sh
+./build/q3asr-cli \
+  --text-model models/gguf/Qwen3-ASR-1.7B-text-Q8_0.gguf \
+  --mmproj-model models/gguf/Qwen3-ASR-1.7B-mmproj.gguf \
+  --audio testdata/q3asr-input.wav \
+  --context "PSPDFKit Claudebot /r/apple" \
+  --show-raw
+```
+
 4. If the change touches parity-sensitive areas, compare against the sibling patched `llama.cpp` CLI.
 
 ```sh
@@ -240,6 +251,10 @@ If you add another aligner regression:
 
 - Do not treat random interactive input typed into a reference CLI as part of the intended prompt. Confirm prompt structure from the Python reference or the model template.
 - The current decoder prompt path is explicit in `src/decoder_llama.cpp`. Keep prompt changes justified and validated.
+- Python-style "hotwords" are prompt context, not a separate biasing API:
+  - `Qwen3ASRModel.transcribe(..., context=...)`
+  - one audio item gets one context string
+  - if that audio is split into multiple chunks, the same context string is reused for each chunk
 - The only active token-level streaming behavior in this repo right now is one-shot decoder streaming from the callback.
 - This is not the same as the future live session API from the design doc.
 - The forced aligner is now part of the long-audio transcription stitcher:

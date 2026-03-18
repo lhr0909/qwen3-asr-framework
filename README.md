@@ -17,6 +17,7 @@ This is not a finished product yet. The encoder and decoder path runs end to end
 
 - One-shot transcription works with local split GGUF weights.
 - Raw decoder text can now be streamed token-by-token through the C API callback and the CLI `--stream-raw` mode.
+- Transcription now supports Python-style prompt context through one system-message string per request.
 - Long-audio transcription now has an aligner-backed chunked mode with bounded decoder windows and forced-aligner-owned span merging.
 - A separate console-oriented chunked streaming CLI now renders committed text plus provisional partial text during long-audio transcription.
 - The public API supports:
@@ -155,6 +156,17 @@ Example:
   --show-raw
 ```
 
+Context / hotword-hint example:
+
+```sh
+./build/q3asr-cli \
+  --text-model models/gguf/Qwen3-ASR-1.7B-text-Q8_0.gguf \
+  --mmproj-model models/gguf/Qwen3-ASR-1.7B-mmproj.gguf \
+  --audio testdata/q3asr-input.wav \
+  --context "PSPDFKit Claudebot /r/apple" \
+  --show-raw
+```
+
 Long-audio transcription example:
 
 ```sh
@@ -176,6 +188,7 @@ Chunked console streaming example:
   --mmproj-model models/gguf/Qwen3-ASR-1.7B-mmproj.gguf \
   --aligner-model models/gguf/qwen3-forced-aligner-0.6b-f16.gguf \
   --audio testdata/long-audio.wav \
+  --context-file /tmp/q3asr-context.txt \
   --audio-chunk-sec 180 \
   --max-tokens 1024
 ```
@@ -188,6 +201,8 @@ That CLI renders progress on stderr as:
 Useful CLI flags:
 
 - `--language <name>`: force a language hint
+- `--context <text>`: pass Python-style prompt context / hotword hints through the system message
+- `--context-file <path>`: read that context text from a file
 - `--audio-chunk-sec <sec>`: max audio seconds per transcription chunk when using `--aligner-model`
 - `--audio-overlap-sec <sec>`: overlap seconds between chunk decode windows; defaults to `5`
 - `--max-tokens <n>`: cap decoder output length

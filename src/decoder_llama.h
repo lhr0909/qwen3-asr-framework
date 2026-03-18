@@ -24,6 +24,7 @@ struct decoder_transcribe_params {
     int n_batch = 512;
     int n_ctx = 4096;
     std::string language_hint;
+    std::string context;
     std::function<void(const std::string &)> raw_text_callback;
 };
 

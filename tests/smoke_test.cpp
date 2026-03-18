@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <string>
 
@@ -63,6 +64,10 @@ int main(int argc, char ** argv) {
     q3asr_aligner_context_params aligner_params = q3asr_aligner_context_default_params();
     q3asr_transcribe_params tx_params = q3asr_transcribe_default_params();
     std::string audio_path;
+    std::string context;
+    std::string context_file;
+    bool has_context_arg = false;
+    bool has_context_file_arg = false;
     std::string expect_substring;
     std::string expect_language;
     int expect_stream_calls_at_least = 0;
@@ -82,6 +87,12 @@ int main(int argc, char ** argv) {
             aligner_params.aligner_model_path = argv[++i];
         } else if (std::strcmp(argv[i], "--audio") == 0 && i + 1 < argc) {
             audio_path = argv[++i];
+        } else if (std::strcmp(argv[i], "--context") == 0 && i + 1 < argc) {
+            context = argv[++i];
+            has_context_arg = true;
+        } else if (std::strcmp(argv[i], "--context-file") == 0 && i + 1 < argc) {
+            context_file = argv[++i];
+            has_context_file_arg = true;
         } else if (std::strcmp(argv[i], "--audio-chunk-sec") == 0 && i + 1 < argc) {
             // Keep the CLI/test surface aligned with the library surface for chunked long-audio transcription.
             // The default overlap is applied in the same way as the CLI.
@@ -118,6 +129,19 @@ int main(int argc, char ** argv) {
         }
     }
 
+    if (has_context_arg && has_context_file_arg) {
+        std::cerr << "Use only one of --context or --context-file\n";
+        return 1;
+    }
+    if (has_context_file_arg) {
+        std::ifstream file(context_file);
+        if (!file.is_open()) {
+            std::cerr << "Failed to open context file: " << context_file << "\n";
+            return 1;
+        }
+        context.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    }
+
     if (ctx_params.text_model_path == nullptr || ctx_params.mmproj_model_path == nullptr || audio_path.empty()) {
         std::cerr << "Smoke test requires --text-model, --mmproj-model, and --audio\n";
         return 1;
@@ -136,6 +160,7 @@ int main(int argc, char ** argv) {
     }
 
     q3asr_transcribe_result result = {};
+    tx_params.context = context.c_str();
     StreamCapture stream_capture;
     ProgressCapture progress_capture;
     q3asr_aligner_context * aligner_ctx = nullptr;

@@ -97,8 +97,8 @@ void init_llama_once() {
     });
 }
 
-std::string build_prefix_prompt() {
-    return "<|im_start|>system\n<|im_end|>\n<|im_start|>user\n<|audio_start|>";
+std::string build_prefix_prompt(const std::string & context) {
+    return "<|im_start|>system\n" + context + "<|im_end|>\n<|im_start|>user\n<|audio_start|>";
 }
 
 std::string build_suffix_prompt(const std::string & language_hint) {
@@ -183,7 +183,7 @@ bool LlamaDecoder::decode_audio_embeddings(
     }
 
     const int n_audio = static_cast<int>(embeddings.size() / static_cast<size_t>(n_embd));
-    const std::vector<llama_token> prefix_tokens = tokenize(build_prefix_prompt(), true, true);
+    const std::vector<llama_token> prefix_tokens = tokenize(build_prefix_prompt(params.context), true, true);
     const std::vector<llama_token> suffix_tokens = tokenize(build_suffix_prompt(params.language_hint), true, false);
 
     if (prefix_tokens.empty() || suffix_tokens.empty()) {

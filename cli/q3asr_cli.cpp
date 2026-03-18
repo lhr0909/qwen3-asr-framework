@@ -107,6 +107,8 @@ void print_usage(const char * program) {
         << "  " << program << " --aligner-model <path> --align-text-file <path> --audio <wav> [options]\n"
         << "Options:\n"
         << "  --language <name>   Force a language hint\n"
+        << "  --context <text>    Prompt context / hotword hint text\n"
+        << "  --context-file <p>  Read prompt context from a text file\n"
         << "  --audio-chunk-sec <sec>  Max audio seconds per transcription chunk when using --aligner-model\n"
         << "  --audio-overlap-sec <sec>  Overlap seconds between chunk decode windows (default: 5)\n"
         << "  --max-tokens <n>    Maximum number of decoder tokens (default: 256)\n"
@@ -133,7 +135,11 @@ int main(int argc, char ** argv) {
     std::string audio_path;
     std::string align_text;
     std::string align_text_file;
+    std::string context;
+    std::string context_file;
     std::string inferred_align_language;
+    bool has_context_arg = false;
+    bool has_context_file_arg = false;
     bool show_raw = false;
     bool stream_raw = false;
     RawStreamState raw_stream_state;
@@ -155,6 +161,12 @@ int main(int argc, char ** argv) {
             align_text_file = argv[++i];
         } else if (std::strcmp(arg, "--language") == 0 && i + 1 < argc) {
             tx_params.language_hint = argv[++i];
+        } else if (std::strcmp(arg, "--context") == 0 && i + 1 < argc) {
+            context = argv[++i];
+            has_context_arg = true;
+        } else if (std::strcmp(arg, "--context-file") == 0 && i + 1 < argc) {
+            context_file = argv[++i];
+            has_context_file_arg = true;
         } else if (std::strcmp(arg, "--audio-chunk-sec") == 0 && i + 1 < argc) {
             tx_params.max_audio_chunk_seconds = std::strtof(argv[++i], nullptr);
         } else if (std::strcmp(arg, "--audio-overlap-sec") == 0 && i + 1 < argc) {
@@ -205,11 +217,23 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
+    if (has_context_arg && has_context_file_arg) {
+        std::cerr << "Use only one of --context or --context-file\n";
+        return 1;
+    }
+
+    std::string text_file_error;
+    if (has_context_file_arg && !read_text_file(context_file, context, text_file_error)) {
+        std::cerr << text_file_error << "\n";
+        return 1;
+    }
+
     if (transcribe_mode) {
         if (has_align_inputs) {
             print_usage(argv[0]);
             return 1;
         }
+        tx_params.context = context.c_str();
         if (ctx_params.text_model_path == nullptr || ctx_params.mmproj_model_path == nullptr) {
             print_usage(argv[0]);
             return 1;
@@ -294,6 +318,11 @@ int main(int argc, char ** argv) {
         }
         q3asr_context_destroy(ctx);
         return 0;
+    }
+
+    if (has_context_arg || has_context_file_arg) {
+        std::cerr << "--context and --context-file are only supported in transcription mode\n";
+        return 1;
     }
 
     if (aligner_params.aligner_model_path == nullptr || (!align_text.empty() && !align_text_file.empty())) {

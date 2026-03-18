@@ -184,6 +184,17 @@ if(Q3ASR_BUILD_TESTS)
                     --expect-stream-equals-raw
             )
 
+            add_test(
+                NAME q3asr-context-regression
+                COMMAND q3asr-smoke-test
+                    --text-model "${Q3ASR_TEST_TEXT_MODEL}"
+                    --mmproj-model "${Q3ASR_TEST_MMPROJ_MODEL}"
+                    --audio "${Q3ASR_TEST_AUDIO_ENGLISH}"
+                    --context "PSPDFKit Claudebot /r/apple"
+                    --expect-language "English"
+                    --expect-substring "/r/apple"
+            )
+
             if(EXISTS "${Q3ASR_TEST_ALIGNER_MODEL}")
                 add_test(
                     NAME q3asr-long-transcribe-regression

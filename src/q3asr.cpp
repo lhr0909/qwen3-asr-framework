@@ -101,6 +101,7 @@ public:
         result = {};
 
         const std::string language_hint = normalize_language(params.language_hint == nullptr ? "" : params.language_hint);
+        const std::string context = params.context != nullptr ? params.context : "";
         std::function<void(const std::string &)> raw_text_callback;
         if (params.raw_text_callback != nullptr) {
             raw_text_callback = [&](const std::string & raw_text) {
@@ -132,7 +133,7 @@ public:
             params.max_audio_chunk_seconds > 0.0f &&
             static_cast<float>(n_samples) / QWEN_SAMPLE_RATE > params.max_audio_chunk_seconds
         ) {
-            return transcribe_long(samples, n_samples, params, language_hint, raw_text_callback, progress_callback, result);
+            return transcribe_long(samples, n_samples, params, language_hint, context, raw_text_callback, progress_callback, result);
         }
 
         std::function<void(const std::string &)> chunk_raw_callback = raw_text_callback;
@@ -145,7 +146,7 @@ public:
             };
         }
 
-        const bool ok = transcribe_chunk(samples, n_samples, params, language_hint, chunk_raw_callback, result);
+        const bool ok = transcribe_chunk(samples, n_samples, params, language_hint, context, chunk_raw_callback, result);
         if (ok && progress_callback) {
             progress_callback(
                 !result.language.empty() ? result.language : language_hint,
@@ -174,6 +175,7 @@ private:
         int n_samples,
         const q3asr_transcribe_params & params,
         const std::string & language_hint,
+        const std::string & context,
         const std::function<void(const std::string &)> & raw_text_callback,
         transcript_result & result
     ) {
@@ -198,6 +200,7 @@ private:
         decoder_params.n_batch = params_.n_batch;
         decoder_params.n_ctx = params_.n_ctx;
         decoder_params.language_hint = language_hint;
+        decoder_params.context = context;
         decoder_params.raw_text_callback = raw_text_callback;
 
         std::vector<decoder_token_span> raw_token_spans;
@@ -232,6 +235,7 @@ private:
         int n_samples,
         const q3asr_transcribe_params & params,
         const std::string & requested_language,
+        const std::string & context,
         const std::function<void(const std::string &)> & raw_text_callback,
         const progress_callback_fn & progress_callback,
         transcript_result & result
@@ -326,6 +330,7 @@ private:
                     window_len,
                     chunk_params,
                     resolved_language,
+                    context,
                     chunk_raw_callback,
                     chunk_result)) {
                 error_msg_ = "Chunked transcription failed for chunk " +
@@ -887,6 +892,7 @@ q3asr_aligner_context_params q3asr_aligner_context_default_params(void) {
 
 q3asr_transcribe_params q3asr_transcribe_default_params(void) {
     q3asr_transcribe_params params = {};
+    params.context = nullptr;
     params.max_tokens = 256;
     params.temperature = 0.0f;
     params.aligner_context = nullptr;

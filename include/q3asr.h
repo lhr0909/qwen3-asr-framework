@@ -38,6 +38,7 @@ typedef struct {
 
 typedef struct {
     const char * language_hint;
+    const char * context;
     int max_tokens;
     float temperature;
     q3asr_aligner_context * aligner_context;
