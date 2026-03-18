@@ -90,36 +90,58 @@ if(Q3ASR_BUILD_TESTS)
     add_executable(q3asr-aligner-test tests/aligner_test.cpp)
     target_link_libraries(q3asr-aligner-test PRIVATE q3asr)
 
+    set(_Q3ASR_DEFAULT_TEST_TEXT_MODEL "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/Qwen3-ASR-1.7B-text-Q8_0.gguf")
+    set(_Q3ASR_DEFAULT_TEST_MMPROJ_MODEL "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/Qwen3-ASR-1.7B-mmproj.gguf")
+    set(_Q3ASR_DEFAULT_TEST_AUDIO "${CMAKE_CURRENT_SOURCE_DIR}/testdata/asr_zh.wav")
+    set(_Q3ASR_DEFAULT_TEST_AUDIO_ENGLISH "${CMAKE_CURRENT_SOURCE_DIR}/testdata/q3asr-input.wav")
+    set(_Q3ASR_DEFAULT_TEST_ALIGNER_MODEL "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/qwen3-forced-aligner-0.6b-f16.gguf")
+
     set(
         Q3ASR_TEST_TEXT_MODEL
-        "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/Qwen3-ASR-1.7B-text-Q8_0.gguf"
+        "${_Q3ASR_DEFAULT_TEST_TEXT_MODEL}"
         CACHE FILEPATH
         "Default text model for the smoke test"
     )
     set(
         Q3ASR_TEST_MMPROJ_MODEL
-        "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/Qwen3-ASR-1.7B-mmproj.gguf"
+        "${_Q3ASR_DEFAULT_TEST_MMPROJ_MODEL}"
         CACHE FILEPATH
         "Default mmproj model for the smoke test"
     )
     set(
         Q3ASR_TEST_AUDIO
-        "${CMAKE_CURRENT_SOURCE_DIR}/testdata/asr_zh.wav"
+        "${_Q3ASR_DEFAULT_TEST_AUDIO}"
         CACHE FILEPATH
         "Default wav file for the smoke test"
     )
     set(
         Q3ASR_TEST_AUDIO_ENGLISH
-        "${CMAKE_CURRENT_SOURCE_DIR}/testdata/q3asr-input.wav"
+        "${_Q3ASR_DEFAULT_TEST_AUDIO_ENGLISH}"
         CACHE FILEPATH
         "Optional English regression wav file for parity checks"
     )
     set(
         Q3ASR_TEST_ALIGNER_MODEL
-        "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/qwen3-forced-aligner-0.6b-f16.gguf"
+        "${_Q3ASR_DEFAULT_TEST_ALIGNER_MODEL}"
         CACHE FILEPATH
         "Default forced aligner model for alignment regressions"
     )
+
+    if(NOT EXISTS "${Q3ASR_TEST_TEXT_MODEL}" AND EXISTS "${_Q3ASR_DEFAULT_TEST_TEXT_MODEL}")
+        set(Q3ASR_TEST_TEXT_MODEL "${_Q3ASR_DEFAULT_TEST_TEXT_MODEL}")
+    endif()
+    if(NOT EXISTS "${Q3ASR_TEST_MMPROJ_MODEL}" AND EXISTS "${_Q3ASR_DEFAULT_TEST_MMPROJ_MODEL}")
+        set(Q3ASR_TEST_MMPROJ_MODEL "${_Q3ASR_DEFAULT_TEST_MMPROJ_MODEL}")
+    endif()
+    if(NOT EXISTS "${Q3ASR_TEST_AUDIO}" AND EXISTS "${_Q3ASR_DEFAULT_TEST_AUDIO}")
+        set(Q3ASR_TEST_AUDIO "${_Q3ASR_DEFAULT_TEST_AUDIO}")
+    endif()
+    if(NOT EXISTS "${Q3ASR_TEST_AUDIO_ENGLISH}" AND EXISTS "${_Q3ASR_DEFAULT_TEST_AUDIO_ENGLISH}")
+        set(Q3ASR_TEST_AUDIO_ENGLISH "${_Q3ASR_DEFAULT_TEST_AUDIO_ENGLISH}")
+    endif()
+    if(NOT EXISTS "${Q3ASR_TEST_ALIGNER_MODEL}" AND EXISTS "${_Q3ASR_DEFAULT_TEST_ALIGNER_MODEL}")
+        set(Q3ASR_TEST_ALIGNER_MODEL "${_Q3ASR_DEFAULT_TEST_ALIGNER_MODEL}")
+    endif()
 
     if(
         EXISTS "${Q3ASR_TEST_TEXT_MODEL}" AND
@@ -171,6 +193,20 @@ if(Q3ASR_BUILD_TESTS)
                     --audio "${Q3ASR_TEST_AUDIO_ENGLISH}"
                     --text "You can apparently promote on Sundays on /r/apple on Reddit."
                     --language "English"
+                    --expect-count 10
+                    --expect-item "rapple"
+                    --expect-first "You"
+                    --expect-last "Reddit"
+            )
+
+            add_test(
+                NAME q3asr-aligner-chunked-english
+                COMMAND q3asr-aligner-test
+                    --aligner-model "${Q3ASR_TEST_ALIGNER_MODEL}"
+                    --audio "${Q3ASR_TEST_AUDIO_ENGLISH}"
+                    --text "You can apparently promote on Sundays on /r/apple on Reddit."
+                    --language "English"
+                    --max-chunk-sec 2
                     --expect-count 10
                     --expect-item "rapple"
                     --expect-first "You"

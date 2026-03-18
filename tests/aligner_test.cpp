@@ -35,6 +35,7 @@ bool nearly_monotonic(const q3asr_alignment_result & result) {
 
 int main(int argc, char ** argv) {
     q3asr_aligner_context_params params = q3asr_aligner_context_default_params();
+    q3asr_align_params align_params = q3asr_align_default_params();
     std::string audio_path;
     std::string text;
     std::string language;
@@ -52,6 +53,8 @@ int main(int argc, char ** argv) {
             text = argv[++i];
         } else if (std::strcmp(argv[i], "--language") == 0 && i + 1 < argc) {
             language = argv[++i];
+        } else if (std::strcmp(argv[i], "--max-chunk-sec") == 0 && i + 1 < argc) {
+            align_params.max_chunk_seconds = std::strtof(argv[++i], nullptr);
         } else if (std::strcmp(argv[i], "--expect-count") == 0 && i + 1 < argc) {
             expect_count = std::atoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--expect-item") == 0 && i + 1 < argc) {
@@ -84,7 +87,7 @@ int main(int argc, char ** argv) {
     }
 
     q3asr_alignment_result result = {};
-    if (!q3asr_align_wav_file(ctx, audio_path.c_str(), text.c_str(), language.c_str(), &result)) {
+    if (!q3asr_align_wav_file_ex(ctx, audio_path.c_str(), text.c_str(), language.c_str(), &align_params, &result)) {
         std::cerr << q3asr_aligner_context_last_error(ctx) << "\n";
         q3asr_aligner_context_destroy(ctx);
         return 1;

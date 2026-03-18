@@ -40,6 +40,11 @@ Canonical local artifact locations in this repo:
 - `models/gguf/`
 - `testdata/`
 
+Notable local long-audio fixtures:
+
+- `testdata/long-audio.wav`
+- `testdata/long-audio-result.txt`
+
 Canonical base safetensor model locations for the Python reference:
 
 - `../Qwen3-ASR/models/Qwen3-ASR-1.7B`
@@ -133,6 +138,26 @@ Forced-aligner spot checks:
   --language Chinese
 ```
 
+Raw-output-file spot check:
+
+```sh
+./build/q3asr-cli \
+  --aligner-model models/gguf/qwen3-forced-aligner-0.6b-f16.gguf \
+  --audio testdata/q3asr-input.wav \
+  --align-text-file /tmp/raw-output.txt
+```
+
+If `/tmp/raw-output.txt` contains `language English<asr_text>...`, the CLI now strips the prefix and reuses the language automatically.
+
+Long forced-align spot check:
+
+```sh
+./build/q3asr-cli \
+  --aligner-model models/gguf/qwen3-forced-aligner-0.6b-f16.gguf \
+  --audio testdata/long-audio.wav \
+  --align-text-file testdata/long-audio-result.txt
+```
+
 Long-file spot check:
 
 ```sh
@@ -182,6 +207,7 @@ Current expectations:
 - add a regression test when fixing a parity bug that could plausibly return later
 - if you touch token streaming, keep `q3asr-streaming-regression` passing
 - if you touch aligner normalization or timestamp extraction, keep both `q3asr-aligner-english` and `q3asr-aligner-chinese` passing
+- if you touch forced-align long-audio behavior, keep `q3asr-aligner-chunked-english` passing
 
 If you add another transcript regression:
 
@@ -201,7 +227,7 @@ If you add another aligner regression:
 - The current decoder prompt path is explicit in `src/decoder_llama.cpp`. Keep prompt changes justified and validated.
 - The only active streaming behavior in this repo right now is token streaming from the decoder callback.
 - This is not the same as the future live session API from the design doc.
-- The forced aligner is a separate post-pass today. It does not yet participate in chunk ownership or long-audio stitching.
+- The forced aligner is a separate post-pass today. Its long-audio mode now mirrors the Python timestamping splitter, but it still does not participate in transcription chunk ownership or punctuation-preserving stitching.
 - Keep KV positions monotonic across:
   - prefix tokens
   - injected audio embeddings
@@ -209,15 +235,22 @@ If you add another aligner regression:
   - generated tokens
 - The mel front end is sensitive. Do not swap in a different FFT or mel path without a regression check against the sibling runtime.
 - `clip.audio.conv_chunksize` is not the time-axis encoder split for Qwen3-ASR. The active interpretation is correct: use `n_window * 2` mel frames for the actual time chunk.
-- Long-audio chunking/session behavior was intentionally removed for now after incorrect results on longer files. Do not reintroduce it casually without validating against the Python reference semantics.
+- Long-audio transcription chunking/session behavior was intentionally removed for now after incorrect results on longer files. Do not reintroduce it casually without validating against the Python reference semantics.
 - The Python vLLM streaming path is still the reference algorithm for future session work: it re-feeds accumulated audio and prepends a rollback-trimmed decoded prefix on each step.
 - The Python forced aligner reference is the semantics target for normalized units:
   - default languages use whitespace splitting plus punctuation stripping and Chinese-character splitting
   - Chinese mixed text is character-level for CJK spans
   - `/r/apple` normalizes to `rapple`
   - Japanese in this repo is still a best-effort fallback, not `nagisa` parity
+- `--align-text-file` is intended for raw decoder output captures. If the file includes the `language ...<asr_text>` prefix, do not strip it by hand first unless you need custom preprocessing.
+- Forced-align chunking defaults to the Python timestamping constants:
+  - `max_chunk_seconds = 180`
+  - `chunk_search_expand_seconds = 5`
+  - `min_chunk_window_ms = 100`
+- The current long-audio aligner assigns transcript ownership to chunks over normalized aligner units by cumulative duration. That is good enough for timestamp experiments, but it is not yet the final raw-text merge policy.
 - The entrypoint still requires `16 kHz` audio. Float wav is supported; resampling is not.
 - Logging from `llama.cpp` is muted by default. Use `Q3ASR_LLAMA_VERBOSE=1` while debugging decoder issues.
+- The copied 15-minute fixture now completes through the chunked aligner path, but runtime is still substantial. Prefer short fixtures for tight regression loops and keep long-audio validation as an explicit spot check.
 
 ## Dependency Constraints
 

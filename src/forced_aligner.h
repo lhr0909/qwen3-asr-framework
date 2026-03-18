@@ -35,6 +35,12 @@ struct alignment_result {
     int64_t t_total_ms = 0;
 };
 
+struct align_runtime_params {
+    float max_chunk_seconds = 180.0f;
+    float chunk_search_expand_seconds = 5.0f;
+    float min_chunk_window_ms = 100.0f;
+};
+
 struct forced_aligner_hparams {
     int32_t audio_encoder_layers = 24;
     int32_t audio_d_model = 1024;
@@ -154,7 +160,20 @@ public:
     bool load_model(const std::string & model_path, const aligner_load_params & params);
 
     alignment_result align(const std::string & audio_path, const std::string & text, const std::string & language);
+    alignment_result align(
+        const std::string & audio_path,
+        const std::string & text,
+        const std::string & language,
+        const align_runtime_params & runtime_params
+    );
     alignment_result align(const float * samples, int n_samples, const std::string & text, const std::string & language);
+    alignment_result align(
+        const float * samples,
+        int n_samples,
+        const std::string & text,
+        const std::string & language,
+        const align_runtime_params & runtime_params
+    );
 
     const std::string & error() const { return error_msg_; }
     bool is_loaded() const { return model_loaded_; }
@@ -174,7 +193,16 @@ private:
     std::vector<int32_t> extract_timestamp_classes(const std::vector<float> & logits, const std::vector<int32_t> & tokens) const;
     std::vector<int32_t> build_input_tokens(const std::vector<int32_t> & text_tokens, int32_t n_audio_frames) const;
     int32_t find_audio_start_pos(const std::vector<int32_t> & tokens) const;
+    std::vector<std::string> normalize_alignment_words(const std::string & text, const std::string & language) const;
+    std::vector<int32_t> encode_words_with_timestamps(const std::vector<std::string> & words) const;
     std::vector<int32_t> tokenize_with_timestamps(const std::string & text, std::vector<std::string> & words, const std::string & language) const;
+    alignment_result align_words(const float * samples, int n_samples, const std::vector<std::string> & words);
+    alignment_result align_chunked(
+        const float * samples,
+        int n_samples,
+        const std::vector<std::string> & words,
+        const align_runtime_params & runtime_params
+    );
 
     forced_aligner_model model_;
     forced_aligner_state state_;

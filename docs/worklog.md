@@ -1,5 +1,79 @@
 # Q3ASR Worklog
 
+## 2026-03-18
+
+### Goal
+
+Follow the official Python timestamping path closely enough to make long-audio forced alignment practical in this repo.
+
+### What Changed
+
+- Kept the new long-audio fixtures local in this repo:
+  - `testdata/long-audio.wav`
+  - `testdata/long-audio-result.txt`
+- Kept the new raw-output-file CLI path:
+  - `--align-text-file <path>`
+- Added chunked forced-alignment runtime params in the public API:
+  - `q3asr_align_params`
+  - `q3asr_align_default_params()`
+  - `q3asr_align_wav_file_ex()`
+  - `q3asr_align_pcm_f32_ex()`
+- Extended `q3asr-cli` with:
+  - `--align-max-chunk-sec <sec>`
+- Implemented a Python-style long-audio forced-align path in `src/forced_aligner.cpp`:
+  - default `180s` max chunk size
+  - `5s` low-energy boundary search window
+  - `100ms` local energy window
+  - padding of too-short chunks to the Python minimum input duration
+  - per-chunk timestamp offset and concatenation back into one result
+- Kept short-input behavior unchanged by routing only over-limit audio through the chunked path.
+- Reused the aligner's normalized lexical units as the chunk-ownership surface:
+  - the full transcript is normalized once
+  - normalized units are assigned to audio chunks proportionally by cumulative duration
+  - each chunk then aligns only its assigned normalized-unit span
+- Added a real-model chunked alignment regression:
+  - `q3asr-aligner-chunked-english`
+- Kept the earlier `--align-text-file` parsing behavior:
+  - if the file contains `language ...<asr_text>...`, the CLI strips the prefix and reuses the embedded language automatically
+- Kept the small CMake fallback so stale cached test paths recover to repo-local defaults under `testdata/`.
+
+### Validation
+
+- Rebuilt and reconfigured successfully:
+  - `cmake -S . -B build`
+  - `cmake --build build -j`
+- Full test suite passes:
+  - `ctest --test-dir build --output-on-failure`
+  - observed: `6/6` passing
+- Verified the raw-output-file path on the short English sample with a temporary file containing:
+  - `language English<asr_text>You can apparently promote on Sundays on /r/apple on Reddit.`
+- Verified the forced chunked path on the same English sample through:
+  - `q3asr-aligner-chunked-english`
+  - observed: same `10` normalized units, including `rapple`
+- Ran a real long-audio forced-alignment command:
+  - `./build/q3asr-cli --aligner-model models/gguf/qwen3-forced-aligner-0.6b-f16.gguf --audio testdata/long-audio.wav --align-text-file testdata/long-audio-result.txt > /tmp/q3asr-long-align.tsv`
+- Observed for the 15-minute fixture:
+  - runtime: about `147.69s`
+  - output lines: `3002`
+  - monotonic timestamps across the whole file
+  - last end time: `911.566`
+- Spot-checked chunk-boundary neighborhoods around roughly `180s`, `360s`, `540s`, and `720s` and confirmed that the merged alignment stays ordered and text remains plausible through those boundaries.
+
+### Remaining Work
+
+- Replace duration-proportional normalized-unit assignment with a better ownership policy once raw display-text stitching matters.
+- Build the future transcription overlap merger on top of these aligned units and absolute timestamps.
+- Compare long-audio boundary quality more directly against the Python `return_time_stamps=True` path once a matching local chunked-ASR experiment is worth the runtime.
+- Add a dedicated helper or script if repeated long-audio alignment runs against `testdata/long-audio.wav` become common.
+
+### Gotchas
+
+- This implementation follows the Python timestamping reference at the audio-chunk level, not at the transcript-chunk source level:
+  - Python gets per-chunk text from chunked ASR first
+  - this repo currently assigns chunk text spans over normalized aligner units by cumulative duration
+- That means the path is good enough for large-file timestamp experiments, but it is not yet the final punctuation-preserving merge policy for future transcription stitching.
+- A stale cached `Q3ASR_TEST_AUDIO_ENGLISH` path can still point at an old root-level `q3asr-input.wav`; the CMake fallback recovers to `testdata/q3asr-input.wav` automatically when that happens.
+
 ## 2026-03-17
 
 ### Goal

@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -24,6 +25,16 @@ namespace {
 constexpr int Q3ASR_FA_MAX_NODES = 16384;
 constexpr int Q3ASR_FA_AUDIO_N_WINDOW = 50;
 constexpr int Q3ASR_FA_AUDIO_N_WINDOW_INFER = 800;
+constexpr float Q3ASR_FA_DEFAULT_MAX_CHUNK_SECONDS = 180.0f;
+constexpr float Q3ASR_FA_DEFAULT_SEARCH_EXPAND_SECONDS = 5.0f;
+constexpr float Q3ASR_FA_DEFAULT_MIN_WINDOW_MS = 100.0f;
+constexpr float Q3ASR_FA_MIN_INPUT_SECONDS = 0.5f;
+
+struct audio_chunk {
+    std::vector<float> samples;
+    int original_n_samples = 0;
+    float offset_sec = 0.0f;
+};
 
 int64_t now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -85,6 +96,150 @@ int32_t get_feat_extract_output_lengths(int32_t input_lengths) {
     const int32_t input_lengths_leave = input_lengths % 100;
     const int32_t feat_lengths = (input_lengths_leave - 1) / 2 + 1;
     return ((feat_lengths - 1) / 2 + 1 - 1) / 2 + 1 + (input_lengths / 100) * 13;
+}
+
+float round_millis(float value) {
+    return std::round(value * 1000.0f) / 1000.0f;
+}
+
+std::vector<audio_chunk> split_audio_into_chunks(
+    const float * samples,
+    int n_samples,
+    int sample_rate,
+    const align_runtime_params & params
+) {
+    std::vector<audio_chunk> chunks;
+    if (samples == nullptr || n_samples <= 0 || sample_rate <= 0) {
+        return chunks;
+    }
+
+    const float max_chunk_sec =
+        params.max_chunk_seconds > 0.0f ? params.max_chunk_seconds : Q3ASR_FA_DEFAULT_MAX_CHUNK_SECONDS;
+    const float search_expand_sec =
+        params.chunk_search_expand_seconds >= 0.0f ? params.chunk_search_expand_seconds : Q3ASR_FA_DEFAULT_SEARCH_EXPAND_SECONDS;
+    const float min_window_ms =
+        params.min_chunk_window_ms > 0.0f ? params.min_chunk_window_ms : Q3ASR_FA_DEFAULT_MIN_WINDOW_MS;
+
+    const float total_sec = static_cast<float>(n_samples) / static_cast<float>(sample_rate);
+    if (max_chunk_sec <= 0.0f || total_sec <= max_chunk_sec) {
+        audio_chunk chunk;
+        chunk.samples.assign(samples, samples + n_samples);
+        chunk.original_n_samples = n_samples;
+        chunks.push_back(std::move(chunk));
+        return chunks;
+    }
+
+    const int max_len = std::max(1, static_cast<int>(std::floor(max_chunk_sec * sample_rate)));
+    const int expand = std::max(0, static_cast<int>(std::floor(search_expand_sec * sample_rate)));
+    const int win = std::max(4, static_cast<int>(std::floor((min_window_ms / 1000.0f) * sample_rate)));
+    const int min_len = std::max(1, static_cast<int>(std::floor(Q3ASR_FA_MIN_INPUT_SECONDS * sample_rate)));
+
+    int start = 0;
+    float offset_sec = 0.0f;
+
+    while ((n_samples - start) > max_len) {
+        const int cut = start + max_len;
+        const int left = std::max(start, cut - expand);
+        const int right = std::min(n_samples, cut + expand);
+
+        int boundary = cut;
+        if (right - left > win) {
+            const int seg_len = right - left;
+            std::vector<float> prefix(static_cast<size_t>(seg_len) + 1, 0.0f);
+            for (int i = 0; i < seg_len; ++i) {
+                prefix[static_cast<size_t>(i + 1)] =
+                    prefix[static_cast<size_t>(i)] + std::fabs(samples[left + i]);
+            }
+
+            float best_sum = std::numeric_limits<float>::infinity();
+            int best_pos = 0;
+            for (int i = 0; i <= seg_len - win; ++i) {
+                const float sum = prefix[static_cast<size_t>(i + win)] - prefix[static_cast<size_t>(i)];
+                if (sum < best_sum) {
+                    best_sum = sum;
+                    best_pos = i;
+                }
+            }
+
+            float best_inner = std::numeric_limits<float>::infinity();
+            int best_inner_pos = 0;
+            for (int i = 0; i < win; ++i) {
+                const float value = std::fabs(samples[left + best_pos + i]);
+                if (value < best_inner) {
+                    best_inner = value;
+                    best_inner_pos = i;
+                }
+            }
+
+            boundary = left + best_pos + best_inner_pos;
+        }
+
+        boundary = std::max(boundary, start + 1);
+        boundary = std::min(boundary, n_samples);
+
+        audio_chunk chunk;
+        chunk.samples.assign(samples + start, samples + boundary);
+        chunk.original_n_samples = boundary - start;
+        chunk.offset_sec = offset_sec;
+
+        if (static_cast<int>(chunk.samples.size()) < min_len) {
+            chunk.samples.resize(static_cast<size_t>(min_len), 0.0f);
+        }
+
+        chunks.push_back(std::move(chunk));
+        offset_sec += static_cast<float>(boundary - start) / static_cast<float>(sample_rate);
+        start = boundary;
+    }
+
+    audio_chunk tail;
+    tail.samples.assign(samples + start, samples + n_samples);
+    tail.original_n_samples = n_samples - start;
+    tail.offset_sec = offset_sec;
+    if (static_cast<int>(tail.samples.size()) < min_len) {
+        tail.samples.resize(static_cast<size_t>(min_len), 0.0f);
+    }
+    chunks.push_back(std::move(tail));
+
+    return chunks;
+}
+
+std::vector<std::pair<size_t, size_t>> assign_word_ranges(
+    const std::vector<audio_chunk> & chunks,
+    size_t n_words,
+    int total_n_samples
+) {
+    std::vector<std::pair<size_t, size_t>> spans;
+    spans.reserve(chunks.size());
+
+    if (chunks.empty()) {
+        return spans;
+    }
+
+    size_t begin = 0;
+    int consumed_samples = 0;
+
+    for (size_t i = 0; i < chunks.size(); ++i) {
+        const bool last_chunk = i + 1 == chunks.size();
+        size_t end = n_words;
+
+        if (!last_chunk && total_n_samples > 0 && n_words > 0) {
+            consumed_samples += chunks[i].original_n_samples;
+            const double ratio = static_cast<double>(consumed_samples) / static_cast<double>(total_n_samples);
+            const double raw_target = ratio * static_cast<double>(n_words);
+            end = static_cast<size_t>(std::llround(raw_target));
+            end = std::max(end, begin);
+            end = std::min(end, n_words);
+        }
+
+        spans.emplace_back(begin, end);
+        begin = end;
+    }
+
+    if (!spans.empty()) {
+        spans.back().second = n_words;
+    }
+
+    return spans;
 }
 
 size_t utf8_char_len(unsigned char c) {
@@ -1517,25 +1672,24 @@ int32_t ForcedAligner::find_audio_start_pos(const std::vector<int32_t> & tokens)
     return -1;
 }
 
-std::vector<int32_t> ForcedAligner::tokenize_with_timestamps(
+std::vector<std::string> ForcedAligner::normalize_alignment_words(
     const std::string & text,
-    std::vector<std::string> & words,
     const std::string & language
 ) const {
-    words.clear();
+    const std::string lang = to_lower_ascii(language);
+    if (lang == "japanese") {
+        return tokenize_japanese_fallback(text);
+    }
+    if (lang == "korean" && !model_.ko_dict.empty()) {
+        return tokenize_korean_dict(text, model_.ko_dict);
+    }
+    return tokenize_space_lang(text);
+}
+
+std::vector<int32_t> ForcedAligner::encode_words_with_timestamps(const std::vector<std::string> & words) const {
     std::vector<int32_t> tokens;
 
-    const std::string lang = to_lower_ascii(language);
-    std::vector<std::string> raw_words;
-    if (lang == "japanese") {
-        raw_words = tokenize_japanese_fallback(text);
-    } else if (lang == "korean" && !model_.ko_dict.empty()) {
-        raw_words = tokenize_korean_dict(text, model_.ko_dict);
-    } else {
-        raw_words = tokenize_space_lang(text);
-    }
-
-    for (const std::string & word : raw_words) {
+    for (const std::string & word : words) {
         if (word.empty()) {
             continue;
         }
@@ -1551,7 +1705,6 @@ std::vector<int32_t> ForcedAligner::tokenize_with_timestamps(
             tokens.push_back(it->second);
         }
 
-        words.push_back(word);
         tokens.push_back(model_.hparams.timestamp_token_id);
         tokens.push_back(model_.hparams.timestamp_token_id);
     }
@@ -1559,7 +1712,25 @@ std::vector<int32_t> ForcedAligner::tokenize_with_timestamps(
     return tokens;
 }
 
+std::vector<int32_t> ForcedAligner::tokenize_with_timestamps(
+    const std::string & text,
+    std::vector<std::string> & words,
+    const std::string & language
+) const {
+    words = normalize_alignment_words(text, language);
+    return encode_words_with_timestamps(words);
+}
+
 alignment_result ForcedAligner::align(const std::string & audio_path, const std::string & text, const std::string & language) {
+    return align(audio_path, text, language, align_runtime_params{});
+}
+
+alignment_result ForcedAligner::align(
+    const std::string & audio_path,
+    const std::string & text,
+    const std::string & language,
+    const align_runtime_params & runtime_params
+) {
     alignment_result result;
 
     if (!model_loaded_) {
@@ -1578,12 +1749,21 @@ alignment_result ForcedAligner::align(const std::string & audio_path, const std:
         return result;
     }
 
-    return align(samples.data(), static_cast<int>(samples.size()), text, language);
+    return align(samples.data(), static_cast<int>(samples.size()), text, language, runtime_params);
 }
 
 alignment_result ForcedAligner::align(const float * samples, int n_samples, const std::string & text, const std::string & language) {
+    return align(samples, n_samples, text, language, align_runtime_params{});
+}
+
+alignment_result ForcedAligner::align(
+    const float * samples,
+    int n_samples,
+    const std::string & text,
+    const std::string & language,
+    const align_runtime_params & runtime_params
+) {
     alignment_result result;
-    const int64_t t_total_start = now_ms();
 
     if (!model_loaded_) {
         result.error_msg = "Forced aligner model is not loaded";
@@ -1594,6 +1774,24 @@ alignment_result ForcedAligner::align(const float * samples, int n_samples, cons
         return result;
     }
 
+    const std::vector<std::string> words = normalize_alignment_words(text, language);
+    if (words.empty()) {
+        result.error_msg = "Forced aligner input text produced no alignable units";
+        return result;
+    }
+
+    const float audio_duration = static_cast<float>(n_samples) / QWEN_SAMPLE_RATE;
+    const float max_chunk_seconds = runtime_params.max_chunk_seconds;
+    if (max_chunk_seconds > 0.0f && audio_duration > max_chunk_seconds) {
+        return align_chunked(samples, n_samples, words, runtime_params);
+    }
+
+    return align_words(samples, n_samples, words);
+}
+
+alignment_result ForcedAligner::align_words(const float * samples, int n_samples, const std::vector<std::string> & words) {
+    alignment_result result;
+    const int64_t t_total_start = now_ms();
     const float audio_duration = static_cast<float>(n_samples) / QWEN_SAMPLE_RATE;
 
     MelFilters mel_filters;
@@ -1618,13 +1816,7 @@ alignment_result ForcedAligner::align(const float * samples, int n_samples, cons
     const int32_t n_audio_frames = static_cast<int32_t>(audio_features.size() / static_cast<size_t>(model_.hparams.text_hidden_size));
     const int32_t n_audio_pads = get_feat_extract_output_lengths(mel.n_len);
 
-    std::vector<std::string> words;
-    std::vector<int32_t> text_tokens = tokenize_with_timestamps(text, words, language);
-    if (words.empty()) {
-        result.error_msg = "Forced aligner input text produced no alignable units";
-        return result;
-    }
-
+    std::vector<int32_t> text_tokens = encode_words_with_timestamps(words);
     std::vector<int32_t> input_tokens = build_input_tokens(text_tokens, n_audio_pads);
     const int32_t audio_start_pos = find_audio_start_pos(input_tokens);
 
@@ -1657,6 +1849,65 @@ alignment_result ForcedAligner::align(const float * samples, int n_samples, cons
         item.end_time = end_idx < timestamps.size() ? timestamps[end_idx] : audio_duration;
 
         result.items.push_back(std::move(item));
+    }
+
+    result.success = true;
+    result.t_total_ms = now_ms() - t_total_start;
+    return result;
+}
+
+alignment_result ForcedAligner::align_chunked(
+    const float * samples,
+    int n_samples,
+    const std::vector<std::string> & words,
+    const align_runtime_params & runtime_params
+) {
+    alignment_result result;
+    const int64_t t_total_start = now_ms();
+
+    const std::vector<audio_chunk> chunks = split_audio_into_chunks(samples, n_samples, QWEN_SAMPLE_RATE, runtime_params);
+    if (chunks.empty()) {
+        result.error_msg = "Failed to split audio for chunked alignment";
+        return result;
+    }
+
+    const std::vector<std::pair<size_t, size_t>> word_ranges = assign_word_ranges(chunks, words.size(), n_samples);
+    result.items.reserve(words.size());
+
+    for (size_t i = 0; i < chunks.size(); ++i) {
+        const auto [begin, end] = word_ranges[i];
+        if (begin >= end || begin >= words.size()) {
+            continue;
+        }
+
+        const std::vector<std::string> chunk_words(words.begin() + static_cast<std::ptrdiff_t>(begin), words.begin() + static_cast<std::ptrdiff_t>(end));
+        alignment_result chunk_result = align_words(
+            chunks[i].samples.data(),
+            static_cast<int>(chunks[i].samples.size()),
+            chunk_words
+        );
+        if (!chunk_result.success) {
+            chunk_result.error_msg =
+                "Chunked forced alignment failed for chunk " + std::to_string(i + 1) +
+                "/" + std::to_string(chunks.size()) + ": " + chunk_result.error_msg;
+            return chunk_result;
+        }
+
+        result.t_mel_ms += chunk_result.t_mel_ms;
+        result.t_encode_ms += chunk_result.t_encode_ms;
+        result.t_decode_ms += chunk_result.t_decode_ms;
+
+        for (aligned_item & item : chunk_result.items) {
+            item.start_time = round_millis(std::min(
+                item.start_time + chunks[i].offset_sec,
+                static_cast<float>(n_samples) / QWEN_SAMPLE_RATE
+            ));
+            item.end_time = round_millis(std::min(
+                item.end_time + chunks[i].offset_sec,
+                static_cast<float>(n_samples) / QWEN_SAMPLE_RATE
+            ));
+            result.items.push_back(std::move(item));
+        }
     }
 
     result.success = true;

@@ -265,6 +265,14 @@ q3asr_transcribe_params q3asr_transcribe_default_params(void) {
     return params;
 }
 
+q3asr_align_params q3asr_align_default_params(void) {
+    q3asr_align_params params = {};
+    params.max_chunk_seconds = 180.0f;
+    params.chunk_search_expand_seconds = 5.0f;
+    params.min_chunk_window_ms = 100.0f;
+    return params;
+}
+
 q3asr_context * q3asr_context_create(const q3asr_context_params * params) {
     const q3asr_context_params effective = params != nullptr ? *params : q3asr_context_default_params();
 
@@ -384,6 +392,18 @@ int q3asr_align_pcm_f32(
     const char * language,
     q3asr_alignment_result * out_result
 ) {
+    return q3asr_align_pcm_f32_ex(ctx, samples, n_samples, text, language, nullptr, out_result);
+}
+
+int q3asr_align_pcm_f32_ex(
+    q3asr_aligner_context * ctx,
+    const float * samples,
+    int n_samples,
+    const char * text,
+    const char * language,
+    const q3asr_align_params * params,
+    q3asr_alignment_result * out_result
+) {
     if (
         ctx == nullptr ||
         ctx->aligner == nullptr ||
@@ -397,11 +417,19 @@ int q3asr_align_pcm_f32(
 
     q3asr_alignment_result_clear(out_result);
 
+    const q3asr_align_params effective =
+        params != nullptr ? *params : q3asr_align_default_params();
+    q3asr::align_runtime_params runtime_params;
+    runtime_params.max_chunk_seconds = effective.max_chunk_seconds;
+    runtime_params.chunk_search_expand_seconds = effective.chunk_search_expand_seconds;
+    runtime_params.min_chunk_window_ms = effective.min_chunk_window_ms;
+
     const q3asr::alignment_result result = ctx->aligner->align(
         samples,
         n_samples,
         text,
-        language != nullptr ? language : ""
+        language != nullptr ? language : "",
+        runtime_params
     );
 
     if (!result.success) {
@@ -439,6 +467,17 @@ int q3asr_align_wav_file(
     const char * language,
     q3asr_alignment_result * out_result
 ) {
+    return q3asr_align_wav_file_ex(ctx, wav_path, text, language, nullptr, out_result);
+}
+
+int q3asr_align_wav_file_ex(
+    q3asr_aligner_context * ctx,
+    const char * wav_path,
+    const char * text,
+    const char * language,
+    const q3asr_align_params * params,
+    q3asr_alignment_result * out_result
+) {
     if (ctx == nullptr || wav_path == nullptr || text == nullptr || out_result == nullptr) {
         return 0;
     }
@@ -455,7 +494,15 @@ int q3asr_align_wav_file(
         return 0;
     }
 
-    return q3asr_align_pcm_f32(ctx, samples.data(), static_cast<int>(samples.size()), text, language, out_result);
+    return q3asr_align_pcm_f32_ex(
+        ctx,
+        samples.data(),
+        static_cast<int>(samples.size()),
+        text,
+        language,
+        params,
+        out_result
+    );
 }
 
 void q3asr_transcribe_result_clear(q3asr_transcribe_result * result) {

@@ -52,9 +52,16 @@ typedef struct {
     size_t n_items;
 } q3asr_alignment_result;
 
+typedef struct {
+    float max_chunk_seconds;
+    float chunk_search_expand_seconds;
+    float min_chunk_window_ms;
+} q3asr_align_params;
+
 q3asr_context_params q3asr_context_default_params(void);
 q3asr_aligner_context_params q3asr_aligner_context_default_params(void);
 q3asr_transcribe_params q3asr_transcribe_default_params(void);
+q3asr_align_params q3asr_align_default_params(void);
 
 q3asr_context * q3asr_context_create(const q3asr_context_params * params);
 void q3asr_context_destroy(q3asr_context * ctx);
@@ -87,12 +94,31 @@ int q3asr_align_wav_file(
     q3asr_alignment_result * out_result
 );
 
+int q3asr_align_wav_file_ex(
+    q3asr_aligner_context * ctx,
+    const char * wav_path,
+    const char * text,
+    const char * language,
+    const q3asr_align_params * params,
+    q3asr_alignment_result * out_result
+);
+
 int q3asr_align_pcm_f32(
     q3asr_aligner_context * ctx,
     const float * samples,
     int n_samples,
     const char * text,
     const char * language,
+    q3asr_alignment_result * out_result
+);
+
+int q3asr_align_pcm_f32_ex(
+    q3asr_aligner_context * ctx,
+    const float * samples,
+    int n_samples,
+    const char * text,
+    const char * language,
+    const q3asr_align_params * params,
     q3asr_alignment_result * out_result
 );
 
