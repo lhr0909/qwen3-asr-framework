@@ -147,7 +147,9 @@ Useful CMake options:
 
 ## Experimental Diarization Model Conversion
 
-You can pull accessible diarization checkpoints from Hugging Face with `uvx hf` and package them into GGUF for local inspection:
+You can pull diarization checkpoints from Hugging Face and package them into GGUF for local inspection.
+
+Accessible ONNX packaging path:
 
 ```sh
 uvx hf download onnx-community/pyannote-segmentation-3.0 \
@@ -172,6 +174,33 @@ uvx --with onnx,numpy,pyyaml python scripts/convert_diarization_onnx_to_gguf.py 
 ```
 
 If those GGUFs exist locally, the repo registers `q3asr-diarization-gguf` in `ctest` and validates the metadata/tensor layout through the C++ loader.
+
+Official PyTorch checkpoint packaging path:
+
+```sh
+uvx hf download pyannote/segmentation-3.0 \
+  --local-dir models/hf/diarization/pyannote-segmentation-3.0
+
+uvx hf download pyannote/wespeaker-voxceleb-resnet34-LM \
+  --local-dir models/hf/diarization/pyannote-wespeaker-voxceleb-resnet34-LM
+
+uvx hf download pyannote/speaker-diarization-3.1 \
+  --local-dir models/hf/diarization/pyannote-speaker-diarization-3.1
+
+uvx --with torch,numpy,pyyaml,torchaudio,pyannote.audio==3.1.1 python scripts/convert_diarization_pytorch_to_gguf.py \
+  --input-dir models/hf/diarization/pyannote-segmentation-3.0 \
+  --output models/gguf/pyannote-segmentation-3.0-pytorch-f32.gguf \
+  --kind speaker-segmentation \
+  --source-repo pyannote/segmentation-3.0
+
+uvx --with torch,numpy,pyyaml,torchaudio,pyannote.audio==3.1.1 python scripts/convert_diarization_pytorch_to_gguf.py \
+  --input-dir models/hf/diarization/pyannote-wespeaker-voxceleb-resnet34-LM \
+  --output models/gguf/pyannote-wespeaker-voxceleb-resnet34-LM-pytorch-f32.gguf \
+  --kind speaker-embedding \
+  --source-repo pyannote/wespeaker-voxceleb-resnet34-LM
+```
+
+If those PyTorch-derived GGUFs exist locally, the repo also registers `q3asr-diarization-gguf-pytorch` in `ctest` and validates the metadata/tensor layout through the same C++ loader.
 
 ## Run The CLI
 

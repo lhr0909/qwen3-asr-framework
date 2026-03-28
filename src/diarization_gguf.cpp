@@ -73,21 +73,56 @@ bool DiarizationGGUFLoader::parse_metadata(const gguf_context * ctx, diarization
     model.architecture = get_string(ctx, "general.architecture");
     model.name = get_string(ctx, "general.name");
     model.kind = get_string(ctx, "diarization.kind");
+    model.serialization_format = get_string(ctx, "diarization.serialization_format");
     model.source_repo = get_string(ctx, "diarization.source_repo");
     model.source_file = get_string(ctx, "diarization.source_file");
     model.config_json = get_string(ctx, "diarization.config_json");
     model.preprocessor_json = get_string(ctx, "diarization.preprocessor_json");
+    model.config_yaml = get_string(ctx, "diarization.config_yaml");
+    model.hparams_yaml = get_string(ctx, "diarization.hparams_yaml");
+    model.hydra_yaml = get_string(ctx, "diarization.hydra_yaml");
+    model.overrides_yaml = get_string(ctx, "diarization.overrides_yaml");
+    model.hyper_parameters_json = get_string(ctx, "diarization.pytorch.hyper_parameters_json");
+    model.pyannote_audio_metadata_json = get_string(ctx, "diarization.pytorch.pyannote_audio_metadata_json");
+    model.model_module = get_string(ctx, "diarization.pytorch.model_module");
+    model.model_class = get_string(ctx, "diarization.pytorch.model_class");
+    model.torch_version = get_string(ctx, "diarization.pytorch.versions.torch");
+    model.pyannote_audio_version = get_string(ctx, "diarization.pytorch.versions.pyannote_audio");
+    model.specifications_repr = get_string(ctx, "diarization.pytorch.specifications_repr");
+    model.tensor_count = get_u32(ctx, "diarization.tensor_count");
+    model.top_level_key_count = get_u32(ctx, "diarization.pytorch.top_level_key_count");
     model.ir_version = get_u32(ctx, "diarization.onnx.ir_version");
     model.initializer_count = get_u32(ctx, "diarization.onnx.initializer_count");
     model.node_count = get_u32(ctx, "diarization.onnx.node_count");
 
+    if (model.serialization_format.empty()) {
+        model.serialization_format = model.ir_version > 0 ? "onnx" : "pytorch";
+    }
+    if (model.tensor_count <= 0) {
+        model.tensor_count = model.initializer_count;
+    }
+
     if (
         model.architecture.empty() ||
         model.kind.empty() ||
-        model.ir_version <= 0 ||
-        model.initializer_count <= 0
+        model.serialization_format.empty() ||
+        model.tensor_count <= 0
     ) {
         error_msg_ = "Invalid or incomplete diarization GGUF metadata";
+        return false;
+    }
+
+    if (model.serialization_format == "pytorch") {
+        return true;
+    }
+
+    if (model.serialization_format != "onnx") {
+        error_msg_ = "Unsupported diarization GGUF serialization format: " + model.serialization_format;
+        return false;
+    }
+
+    if (model.ir_version <= 0 || model.initializer_count <= 0) {
+        error_msg_ = "Invalid or incomplete diarization ONNX metadata";
         return false;
     }
 
@@ -152,7 +187,7 @@ bool DiarizationGGUFLoader::bind_tensor_names(const gguf_context * ctx, diarizat
         }
     }
 
-    return static_cast<int32_t>(model.tensor_names.size()) == model.initializer_count;
+    return static_cast<int32_t>(model.tensor_names.size()) == model.tensor_count;
 }
 
 bool DiarizationGGUFLoader::load_tensor_data(const std::string & path, const gguf_context * ctx, diarization_gguf_model & model) {

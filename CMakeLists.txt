@@ -119,6 +119,8 @@ if(Q3ASR_BUILD_TESTS)
     set(_Q3ASR_DEFAULT_TEST_ALIGNER_MODEL "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/qwen3-forced-aligner-0.6b-f16.gguf")
     set(_Q3ASR_DEFAULT_TEST_DIARIZATION_SEGMENTATION_GGUF "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/pyannote-segmentation-3.0-fp16.gguf")
     set(_Q3ASR_DEFAULT_TEST_DIARIZATION_EMBEDDING_GGUF "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/wespeaker-voxceleb-resnet34-LM-f32.gguf")
+    set(_Q3ASR_DEFAULT_TEST_DIARIZATION_SEGMENTATION_PYTORCH_GGUF "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/pyannote-segmentation-3.0-pytorch-f32.gguf")
+    set(_Q3ASR_DEFAULT_TEST_DIARIZATION_EMBEDDING_PYTORCH_GGUF "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/pyannote-wespeaker-voxceleb-resnet34-LM-pytorch-f32.gguf")
 
     set(
         Q3ASR_TEST_TEXT_MODEL
@@ -162,6 +164,18 @@ if(Q3ASR_BUILD_TESTS)
         CACHE FILEPATH
         "Default diarization embedding GGUF for inspection tests"
     )
+    set(
+        Q3ASR_TEST_DIARIZATION_SEGMENTATION_PYTORCH_GGUF
+        "${_Q3ASR_DEFAULT_TEST_DIARIZATION_SEGMENTATION_PYTORCH_GGUF}"
+        CACHE FILEPATH
+        "Default diarization PyTorch segmentation GGUF for inspection tests"
+    )
+    set(
+        Q3ASR_TEST_DIARIZATION_EMBEDDING_PYTORCH_GGUF
+        "${_Q3ASR_DEFAULT_TEST_DIARIZATION_EMBEDDING_PYTORCH_GGUF}"
+        CACHE FILEPATH
+        "Default diarization PyTorch embedding GGUF for inspection tests"
+    )
 
     if(NOT EXISTS "${Q3ASR_TEST_TEXT_MODEL}" AND EXISTS "${_Q3ASR_DEFAULT_TEST_TEXT_MODEL}")
         set(Q3ASR_TEST_TEXT_MODEL "${_Q3ASR_DEFAULT_TEST_TEXT_MODEL}")
@@ -183,6 +197,12 @@ if(Q3ASR_BUILD_TESTS)
     endif()
     if(NOT EXISTS "${Q3ASR_TEST_DIARIZATION_EMBEDDING_GGUF}" AND EXISTS "${_Q3ASR_DEFAULT_TEST_DIARIZATION_EMBEDDING_GGUF}")
         set(Q3ASR_TEST_DIARIZATION_EMBEDDING_GGUF "${_Q3ASR_DEFAULT_TEST_DIARIZATION_EMBEDDING_GGUF}")
+    endif()
+    if(NOT EXISTS "${Q3ASR_TEST_DIARIZATION_SEGMENTATION_PYTORCH_GGUF}" AND EXISTS "${_Q3ASR_DEFAULT_TEST_DIARIZATION_SEGMENTATION_PYTORCH_GGUF}")
+        set(Q3ASR_TEST_DIARIZATION_SEGMENTATION_PYTORCH_GGUF "${_Q3ASR_DEFAULT_TEST_DIARIZATION_SEGMENTATION_PYTORCH_GGUF}")
+    endif()
+    if(NOT EXISTS "${Q3ASR_TEST_DIARIZATION_EMBEDDING_PYTORCH_GGUF}" AND EXISTS "${_Q3ASR_DEFAULT_TEST_DIARIZATION_EMBEDDING_PYTORCH_GGUF}")
+        set(Q3ASR_TEST_DIARIZATION_EMBEDDING_PYTORCH_GGUF "${_Q3ASR_DEFAULT_TEST_DIARIZATION_EMBEDDING_PYTORCH_GGUF}")
     endif()
 
     if(
@@ -324,6 +344,20 @@ if(Q3ASR_BUILD_TESTS)
                 COMMAND q3asr-diarization-gguf-test
                     --segmentation-model "${Q3ASR_TEST_DIARIZATION_SEGMENTATION_GGUF}"
                     --embedding-model "${Q3ASR_TEST_DIARIZATION_EMBEDDING_GGUF}"
+            )
+        endif()
+
+        if(
+            EXISTS "${Q3ASR_TEST_DIARIZATION_SEGMENTATION_PYTORCH_GGUF}" AND
+            EXISTS "${Q3ASR_TEST_DIARIZATION_EMBEDDING_PYTORCH_GGUF}"
+        )
+            add_test(
+                NAME q3asr-diarization-gguf-pytorch
+                COMMAND q3asr-diarization-gguf-test
+                    --segmentation-model "${Q3ASR_TEST_DIARIZATION_SEGMENTATION_PYTORCH_GGUF}"
+                    --embedding-model "${Q3ASR_TEST_DIARIZATION_EMBEDDING_PYTORCH_GGUF}"
+                    --segmentation-format pytorch
+                    --embedding-format pytorch
             )
         endif()
     else()

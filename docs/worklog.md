@@ -87,6 +87,45 @@
   - the embedding ONNX graph is a ResNet-style conv stack with reductions and a final projection
   - GGUF conversion is straightforward, but full ggml execution still needs dedicated graph/runtime implementation
 
+### Official PyTorch Diarization Conversion
+
+- Retried the original gated pyannote repos after access was granted and confirmed the official checkpoints are now downloadable:
+  - `pyannote/segmentation-3.0`
+  - `pyannote/wespeaker-voxceleb-resnet34-LM`
+  - `pyannote/speaker-diarization-3.1`
+- Confirmed an important reference detail from the official `speaker-diarization-3.1` pipeline config:
+  - the end-to-end pipeline uses `pyannote/segmentation-3.0`
+  - its embedding backend is `pyannote/wespeaker-voxceleb-resnet34-LM`, not the older `pyannote/embedding`
+- Added a second converter path for the official PyTorch checkpoints:
+  - `scripts/convert_diarization_pytorch_to_gguf.py`
+  - it packages PyTorch state-dict tensors plus selected checkpoint/config metadata into GGUF
+  - it keeps the serialization format explicit as `pytorch` instead of pretending these checkpoints are ONNX graphs
+- Expanded the C++ GGUF inspection path to understand both packaging formats:
+  - `src/diarization_gguf.cpp`
+  - `src/diarization_gguf.h`
+  - `tests/diarization_gguf_test.cpp`
+  - `q3asr-diarization-gguf-pytorch`
+- Kept the runtime claim narrow here as well:
+  - this is still GGUF packaging and loader validation only
+  - q3asr still does not execute the official pyannote PyTorch models in ggml yet
+
+### Official PyTorch Diarization Validation
+
+- Downloaded the official checkpoints locally:
+  - `uvx hf download pyannote/segmentation-3.0`
+  - `uvx hf download pyannote/wespeaker-voxceleb-resnet34-LM`
+  - `uvx hf download pyannote/speaker-diarization-3.1`
+- Inspected the checkpoint structure before conversion:
+  - `pyannote/segmentation-3.0` is a PyTorch Lightning checkpoint with `54` state-dict tensors
+  - `pyannote/wespeaker-voxceleb-resnet34-LM` is a PyTorch Lightning checkpoint with `218` state-dict tensors
+- The new converter includes small compatibility shims for modern environments:
+  - restores `torchaudio.set_audio_backend` / `get_audio_backend` expectations used by `pyannote.audio==3.1.1`
+  - restores `np.NaN` for older pyannote codepaths under NumPy 2.x
+- Planned validation path after conversion:
+  - convert both official checkpoints to GGUF
+  - load them through `q3asr-diarization-gguf-test`
+  - confirm the tensor counts and key metadata match the official checkpoint structure
+
 ### Diarization Model Validation
 
 - Verified Hugging Face CLI usage from the official docs and the local tool:
