@@ -14,6 +14,7 @@ endif()
 option(Q3ASR_BUILD_CLI "Build the q3asr wav-file CLI" ON)
 option(Q3ASR_BUILD_TESTS "Build q3asr tests" ON)
 option(Q3ASR_ENABLE_METAL "Enable Metal backend when building llama.cpp on Apple platforms" ON)
+option(Q3ASR_ENABLE_APPLE_STRING_TOKENIZER "Enable CoreFoundation-backed Thai word segmentation on Apple platforms" ON)
 
 set(
     Q3ASR_LLAMA_CPP_SOURCE_DIR
@@ -75,6 +76,10 @@ target_link_libraries(q3asr
 
 if(APPLE)
     target_link_libraries(q3asr PRIVATE "-framework Accelerate")
+    if(Q3ASR_ENABLE_APPLE_STRING_TOKENIZER)
+        target_compile_definitions(q3asr PRIVATE Q3ASR_HAVE_APPLE_STRING_TOKENIZER=1)
+        target_link_libraries(q3asr PRIVATE "-framework CoreFoundation")
+    endif()
 endif()
 
 if(Q3ASR_BUILD_CLI)
@@ -93,6 +98,10 @@ if(Q3ASR_BUILD_TESTS)
 
     add_executable(q3asr-aligner-test tests/aligner_test.cpp)
     target_link_libraries(q3asr-aligner-test PRIVATE q3asr)
+
+    add_executable(q3asr-normalization-test tests/normalization_test.cpp)
+    target_link_libraries(q3asr-normalization-test PRIVATE q3asr)
+    target_include_directories(q3asr-normalization-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
     add_executable(q3asr-diart-diarizer-test tests/diart_diarizer_test.cpp)
     target_link_libraries(q3asr-diart-diarizer-test PRIVATE q3asr)
@@ -270,6 +279,11 @@ if(Q3ASR_BUILD_TESTS)
                     --expect-last "况"
             )
         endif()
+
+        add_test(
+            NAME q3asr-normalization
+            COMMAND q3asr-normalization-test
+        )
 
         add_test(
             NAME q3asr-diart-diarizer

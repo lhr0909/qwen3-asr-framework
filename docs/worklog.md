@@ -64,6 +64,65 @@
   - it keeps the port honest about what is already implemented
   - it avoids introducing fake "ggml diarization" claims before speaker models actually exist in ggml form
 
+## 2026-03-22
+
+### Thai Long-Audio Follow-Up
+
+- Fixed the immediate Thai long-audio failure in the aligner normalization path:
+  - `src/forced_aligner.cpp` no longer drops Thai code points as non-alignable text
+  - Thai normalization now uses Apple `CFStringTokenizer` word segmentation on macOS builds
+  - non-Apple builds keep a dependency-free Thai fallback that produces grapheme-like alignable units instead of an empty unit list
+- Kept the long-audio stitcher from inserting synthetic spaces for space-less languages:
+  - `src/q3asr.cpp` now treats Thai the same way as Chinese/Japanese when joining recovered fragments
+- Added a lightweight normalization regression:
+  - `tests/normalization_test.cpp`
+  - `q3asr-normalization`
+- Kept the change scoped to tokenizer/merge behavior:
+  - no decoder prompt changes
+  - no aligner graph/model changes
+
+### Thai Long-Audio Validation
+
+- Reconfigured and rebuilt successfully:
+  - `cmake -S . -B build`
+  - `cmake --build build -j`
+- Full suite passes:
+  - `ctest --test-dir build --output-on-failure`
+  - observed: `9/9` passing
+- Verified the new normalization regression directly:
+  - `./build/q3asr-normalization-test`
+  - observed: `english=10`, `chinese=13`, `thai=31`
+- Cut a local 30-second Thai clip for a direct aligner spot check:
+  - `ffmpeg -y -i testdata/media_wnh75e4vhiyatfpo.wav -t 30 -acodec pcm_s16le /tmp/q3asr-thai-30s.wav`
+- Verified that the forced aligner now accepts Thai transcript text on that clip:
+  - `./build/q3asr-aligner-test --aligner-model models/gguf/qwen3-forced-aligner-0.6b-f16.gguf --audio /tmp/q3asr-thai-30s.wav --text '<thai transcript>' --language Thai`
+  - observed: `count=88` with monotonic timestamps instead of `Forced aligner input text produced no alignable units`
+- Re-ran the real chunked streaming command on `testdata/media_wnh75e4vhiyatfpo.wav`:
+  - `./build/q3asr-chunk-stream-cli --text-model models/gguf/Qwen3-ASR-1.7B-text-Q8_0.gguf --mmproj-model models/gguf/Qwen3-ASR-1.7B-mmproj.gguf --aligner-model models/gguf/qwen3-forced-aligner-0.6b-f16.gguf --audio ./testdata/media_wnh75e4vhiyatfpo.wav --audio-chunk-sec 30 --audio-overlap-sec 3 --max-tokens 1024`
+  - observed: progressed through chunks `1/120` to `4/120` before manual interrupt, so the original chunk-1 zero-unit failure is gone
+
+### Thai Long-Audio Remaining Work
+
+- The tokenizer gap is fixed, but Thai forced-alignment quality still needs longer manual evaluation:
+  - the official Qwen3 forced-aligner docs still do not list Thai among the model's supported aligner languages
+  - this change proves the runtime no longer fails on Thai tokenization, not that Thai timestamp quality is reference-grade yet
+- Non-Apple builds still use the local fallback tokenizer instead of a dictionary-backed segmenter.
+- If Thai long-audio quality remains a priority on non-Apple hosts, evaluate a portable dictionary segmenter or a vendored library with real Thai word breaking rather than UAX-29-only token boundaries.
+- Do not vendor ICU into `third_party/` for this issue right now:
+  - Apple builds already have a low-friction system tokenizer path via `CFStringTokenizer`
+  - if non-Apple Thai segmentation needs to improve, prefer an optional system ICU integration first
+  - only pull ICU into the repo if identical cross-platform segmentation becomes a hard project requirement worth the build and data-packaging cost
+
+### Thai Long-Audio Gotchas
+
+- Direct ICU `BreakIterator` integration was not practical in this macOS workspace:
+  - `libicucore` is present in the SDK
+  - the SDK does not ship the `brkiter.h` headers needed for a normal C++ ICU integration
+  - `CFStringTokenizer` was the lowest-friction system API that actually exposed Thai word segmentation here
+- A standards-only splitter such as Rust `unicode-segmentation` is not enough for Thai words in this workload:
+  - on the same Thai sample it split into many grapheme-like pieces, not the dictionary-style word boundaries that `Intl.Segmenter` / Apple tokenization returned
+  - that makes it a poor fit for the aligner ownership surface even though it is easy to build
+
 ## 2026-03-18
 
 ### Context Follow-Up

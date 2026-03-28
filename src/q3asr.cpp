@@ -382,7 +382,7 @@ private:
                     stable_end,
                     is_last_chunk
                 );
-                append_text_fragment(merged_text, leading_fragment.text);
+                append_text_fragment(merged_text, leading_fragment.text, current_chunk.language);
                 emit_progress();
                 if (progress_callback) {
                     progress_callback(resolved_language, merged_text, {}, chunk_index, chunk_count);
@@ -413,7 +413,11 @@ private:
                     band_end,
                     false
                 );
-                append_text_fragment(merged_text, choose_boundary_fragment(left_boundary, right_boundary).text);
+                append_text_fragment(
+                    merged_text,
+                    choose_boundary_fragment(left_boundary, right_boundary).text,
+                    current_chunk.language
+                );
             }
 
             const bool is_last_chunk = i + 1 == core_chunks.size();
@@ -427,7 +431,7 @@ private:
                 stable_end,
                 is_last_chunk
             );
-            append_text_fragment(merged_text, stable_fragment.text);
+            append_text_fragment(merged_text, stable_fragment.text, current_chunk.language);
             emit_progress();
             if (progress_callback) {
                 progress_callback(resolved_language, merged_text, {}, chunk_index, chunk_count);
@@ -489,7 +493,23 @@ private:
         }
     }
 
-    static void append_text_fragment(std::string & merged_text, const std::string & fragment) {
+    static bool language_joins_without_spaces(const std::string & language) {
+        std::string normalized_language;
+        normalized_language.reserve(language.size());
+        for (unsigned char ch : language) {
+            normalized_language.push_back(static_cast<char>(std::tolower(ch)));
+        }
+        return
+            normalized_language == "chinese" ||
+            normalized_language == "japanese" ||
+            normalized_language == "thai";
+    }
+
+    static void append_text_fragment(
+        std::string & merged_text,
+        const std::string & fragment,
+        const std::string & language
+    ) {
         const std::string trimmed = trim_ascii(fragment);
         if (trimmed.empty()) {
             return;
@@ -505,7 +525,13 @@ private:
         const bool last_space = std::isspace(static_cast<unsigned char>(last)) != 0;
         const bool first_space = std::isspace(static_cast<unsigned char>(first)) != 0;
 
-        if (!last_space && !first_space && !is_ascii_punct_no_space_before(first) && !is_ascii_punct_no_space_after(last)) {
+        if (
+            !language_joins_without_spaces(language) &&
+            !last_space &&
+            !first_space &&
+            !is_ascii_punct_no_space_before(first) &&
+            !is_ascii_punct_no_space_after(last)
+        ) {
             merged_text.push_back(' ');
         }
 
@@ -593,12 +619,11 @@ private:
     }
 
     static std::string join_normalized_units(const std::vector<std::string> & units, const std::string & language) {
-        const std::string normalized_language = normalize_language(language);
-        const bool cjk_join = normalized_language == "Chinese" || normalized_language == "Japanese";
+        const bool join_without_spaces = language_joins_without_spaces(language);
 
         std::string out;
         for (size_t i = 0; i < units.size(); ++i) {
-            if (i > 0 && !cjk_join) {
+            if (i > 0 && !join_without_spaces) {
                 out.push_back(' ');
             }
             out += units[i];

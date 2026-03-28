@@ -18,6 +18,10 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#ifdef Q3ASR_HAVE_APPLE_STRING_TOKENIZER
+#include <CoreFoundation/CFStringTokenizer.h>
+#endif
+
 namespace q3asr {
 
 namespace {
@@ -334,6 +338,22 @@ bool is_fullwidth_letter_or_digit(uint32_t code) {
         (0xFF41 <= code && code <= 0xFF5A);
 }
 
+bool is_thai_mark(uint32_t code) {
+    return
+        code == 0x0E31 ||
+        (0x0E34 <= code && code <= 0x0E3A) ||
+        (0x0E47 <= code && code <= 0x0E4E);
+}
+
+bool is_thai_word_char(uint32_t code) {
+    return
+        is_thai_mark(code) ||
+        (0x0E01 <= code && code <= 0x0E30) ||
+        (0x0E32 <= code && code <= 0x0E33) ||
+        (0x0E40 <= code && code <= 0x0E46) ||
+        (0x0E50 <= code && code <= 0x0E59);
+}
+
 bool is_kept_char(const std::string & ch) {
     if (ch == "'") {
         return true;
@@ -348,7 +368,12 @@ bool is_kept_char(const std::string & ch) {
         return std::isalnum(static_cast<unsigned char>(code)) != 0;
     }
 
-    return is_cjk_char(code) || is_hangul_char(code) || is_kana_char(code) || is_fullwidth_letter_or_digit(code);
+    return
+        is_cjk_char(code) ||
+        is_hangul_char(code) ||
+        is_kana_char(code) ||
+        is_fullwidth_letter_or_digit(code) ||
+        is_thai_word_char(code);
 }
 
 std::string clean_token(const std::string & token) {
@@ -723,6 +748,183 @@ std::vector<normalized_word_span> normalize_korean_with_spans(
     }
 
     return result;
+}
+
+std::vector<normalized_word_span> normalize_thai_fallback_with_spans(const std::string & text) {
+    std::vector<normalized_word_span> result;
+    std::string buffer;
+    size_t buffer_start = 0;
+    size_t buffer_end = 0;
+    bool buffer_is_thai = false;
+
+    auto flush = [&]() {
+        if (buffer.empty()) {
+            return;
+        }
+        result.push_back({buffer, buffer_start, buffer_end});
+        buffer.clear();
+        buffer_start = 0;
+        buffer_end = 0;
+        buffer_is_thai = false;
+    };
+
+    for (size_t pos = 0; pos < text.size();) {
+        const size_t len = utf8_char_len(static_cast<unsigned char>(text[pos]));
+        const size_t next = std::min(pos + len, text.size());
+        const std::string ch = text.substr(pos, next - pos);
+
+        uint32_t code = 0;
+        const bool have_code = decode_utf8_codepoint(ch, code);
+        const bool thai_word_char = have_code && is_thai_word_char(code);
+
+        if (!thai_word_char && !is_kept_char(ch)) {
+            flush();
+            pos = next;
+            continue;
+        }
+
+        if (thai_word_char) {
+            if (buffer.empty()) {
+                buffer_start = pos;
+                buffer = ch;
+                buffer_end = next;
+                buffer_is_thai = true;
+            } else if (buffer_is_thai && is_thai_mark(code)) {
+                buffer += ch;
+                buffer_end = next;
+            } else {
+                flush();
+                buffer_start = pos;
+                buffer = ch;
+                buffer_end = next;
+                buffer_is_thai = true;
+            }
+        } else {
+            if (buffer.empty()) {
+                buffer_start = pos;
+                buffer = ch;
+                buffer_end = next;
+                buffer_is_thai = false;
+            } else if (!buffer_is_thai) {
+                buffer += ch;
+                buffer_end = next;
+            } else {
+                flush();
+                buffer_start = pos;
+                buffer = ch;
+                buffer_end = next;
+                buffer_is_thai = false;
+            }
+        }
+
+        pos = next;
+    }
+
+    flush();
+    return result;
+}
+
+#ifdef Q3ASR_HAVE_APPLE_STRING_TOKENIZER
+size_t cf_utf8_offset(CFStringRef text, CFIndex utf16_offset) {
+    CFIndex used = 0;
+    CFStringGetBytes(
+        text,
+        CFRangeMake(0, utf16_offset),
+        kCFStringEncodingUTF8,
+        0,
+        false,
+        nullptr,
+        0,
+        &used
+    );
+    return static_cast<size_t>(std::max<CFIndex>(0, used));
+}
+
+std::vector<normalized_word_span> normalize_with_apple_word_tokenizer(
+    const std::string & text
+) {
+    std::vector<normalized_word_span> result;
+
+    CFStringRef cf_text = CFStringCreateWithBytes(
+        kCFAllocatorDefault,
+        reinterpret_cast<const UInt8 *>(text.data()),
+        static_cast<CFIndex>(text.size()),
+        kCFStringEncodingUTF8,
+        false
+    );
+    if (cf_text == nullptr) {
+        return result;
+    }
+
+    CFLocaleRef locale = CFLocaleCreate(kCFAllocatorDefault, CFSTR("th"));
+    CFStringTokenizerRef tokenizer = CFStringTokenizerCreate(
+        kCFAllocatorDefault,
+        cf_text,
+        CFRangeMake(0, CFStringGetLength(cf_text)),
+        kCFStringTokenizerUnitWord,
+        locale
+    );
+    if (locale != nullptr) {
+        CFRelease(locale);
+    }
+    if (tokenizer == nullptr) {
+        CFRelease(cf_text);
+        return result;
+    }
+
+    for (CFStringTokenizerTokenType token_type = CFStringTokenizerAdvanceToNextToken(tokenizer);
+         token_type != kCFStringTokenizerTokenNone;
+         token_type = CFStringTokenizerAdvanceToNextToken(tokenizer)) {
+        if ((token_type & (kCFStringTokenizerTokenNormal |
+                           kCFStringTokenizerTokenHasSubTokensMask |
+                           kCFStringTokenizerTokenHasDerivedSubTokensMask)) == 0) {
+            continue;
+        }
+
+        const CFRange range = CFStringTokenizerGetCurrentTokenRange(tokenizer);
+        if (range.location == kCFNotFound || range.length <= 0) {
+            continue;
+        }
+
+        const size_t byte_start = cf_utf8_offset(cf_text, range.location);
+        const size_t byte_end = cf_utf8_offset(cf_text, range.location + range.length);
+        if (byte_start >= text.size() || byte_end <= byte_start) {
+            continue;
+        }
+
+        const std::string cleaned = clean_token(text.substr(byte_start, byte_end - byte_start));
+        if (cleaned.empty()) {
+            continue;
+        }
+
+        result.push_back({cleaned, byte_start, std::min(byte_end, text.size())});
+    }
+
+    CFRelease(tokenizer);
+    CFRelease(cf_text);
+    return result;
+}
+#endif
+
+std::vector<normalized_word_span> normalize_thai_with_spans(const std::string & text) {
+#ifdef Q3ASR_HAVE_APPLE_STRING_TOKENIZER
+    std::vector<normalized_word_span> segmented = normalize_with_apple_word_tokenizer(text);
+    if (!segmented.empty()) {
+        return segmented;
+    }
+#endif
+    return normalize_thai_fallback_with_spans(text);
+}
+
+std::vector<std::string> span_texts(const std::vector<normalized_word_span> & spans) {
+    std::vector<std::string> tokens;
+    tokens.reserve(spans.size());
+    for (const normalized_word_span & span : spans) {
+        if (!span.text.empty()) {
+            tokens.push_back(span.text);
+        }
+    }
+    return tokens;
 }
 
 const std::vector<std::string> & get_byte_to_unicode_table() {
@@ -1878,6 +2080,9 @@ std::vector<std::string> ForcedAligner::normalize_alignment_words(
     const std::string & language
 ) const {
     const std::string lang = to_lower_ascii(language);
+    if (lang == "thai") {
+        return span_texts(normalize_thai_with_spans(text));
+    }
     if (lang == "japanese") {
         return tokenize_japanese_fallback(text);
     }
@@ -1892,6 +2097,9 @@ std::vector<normalized_word_span> ForcedAligner::normalize_with_spans(
     const std::string & language
 ) const {
     const std::string lang = to_lower_ascii(language);
+    if (lang == "thai") {
+        return normalize_thai_with_spans(text);
+    }
     if (lang == "japanese") {
         return normalize_japanese_with_spans(text);
     }
