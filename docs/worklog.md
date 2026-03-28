@@ -1,5 +1,69 @@
 # Q3ASR Worklog
 
+## 2026-03-28
+
+### Diart Port Bring-Up
+
+- Studied the upstream `diart` package and kept the port scoped to the parts that are both portable and useful in this repo today:
+  - `src/diart_diarizer.cpp`
+  - `src/diart_diarizer.h`
+- Ported the online diarization runtime pieces instead of vendoring the Python package or pretending the pyannote models were already portable:
+  - overlap-aware speaker weighting with the `diart` Equation-2 style penalty
+  - ggml-backed per-frame softmax for that weighting step
+  - L2 speaker-embedding normalization
+  - delayed overlap aggregation with `mean`, `hamming`, and `first` strategies
+  - constrained online speaker clustering with Hungarian assignment, new-speaker thresholding, and centroid updates
+  - a small stateful `DiartDiarizer` wrapper that emits aggregated and binarized speaker activity per step
+- Kept the new surface internal for now:
+  - no public C API additions yet
+  - no CLI wiring yet
+  - no attempt to claim end-to-end diarization quality without ggml speaker models
+- Added a synthetic regression target:
+  - `tests/diart_diarizer_test.cpp`
+  - `q3asr-diart-diarizer`
+- Wired the module into the normal library build in `CMakeLists.txt`.
+
+### Diart Port Validation
+
+- Reconfigured and rebuilt successfully:
+  - `cmake -S . -B build`
+  - `cmake --build build -j`
+- Verified the new diarization regression directly:
+  - `./build/q3asr-diart-diarizer-test`
+  - observed: `diart_diarizer_test passed`
+- Re-ran the full repo suite after adding the new module:
+  - `ctest --test-dir build --output-on-failure`
+  - observed: `10/10` passing
+- The new regression covers the main algorithmic pieces we ported:
+  - overlap penalty matches a hand-computed softmax example
+  - embedding normalization produces unit-length vectors
+  - delayed aggregation reproduces the `diart` frame-count behavior on the overlapping-buffer example
+  - clustering preserves speaker identity across local-speaker reordering and opens a new global speaker when the distance threshold is exceeded
+
+### Diart Port Remaining Work
+
+- This is not a full `diart` replacement yet.
+- The current port expects external segmentation scores and speaker embeddings as inputs.
+- The actual neural models used by upstream `diart` are still missing from this repo in ggml form:
+  - speaker segmentation
+  - speaker embedding extraction
+- If diarization is going to become a first-class feature here, the next practical step is to choose a concrete model path:
+  - convert a small segmentation model to gguf/ggml and integrate it
+  - convert a speaker embedding model to gguf/ggml and integrate it
+  - only then add a public C API and CLI path
+
+### Diart Port Gotchas
+
+- Upstream `diart` is a Python pipeline around pyannote-style models, not a standalone diarization model bundle.
+- The algorithm port was the realistic part to bring over in one pass; the neural model port is the real remaining cost.
+- `diart`'s delayed aggregation depends on pyannote's fixed-duration loose crop semantics, which are slightly counterintuitive at the frame boundaries:
+  - the crop count is effectively `round(duration / frame_step) + 1`
+  - matching that behavior was necessary to reproduce the upstream overlapping-window example
+- The new module currently uses ggml only for the overlap-penalty softmax math.
+- That is intentional:
+  - it keeps the port honest about what is already implemented
+  - it avoids introducing fake "ggml diarization" claims before speaker models actually exist in ggml form
+
 ## 2026-03-18
 
 ### Context Follow-Up

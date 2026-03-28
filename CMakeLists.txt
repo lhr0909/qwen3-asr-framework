@@ -45,6 +45,7 @@ find_package(Threads REQUIRED)
 set(Q3ASR_SOURCES
     src/audio_encoder.cpp
     src/decoder_llama.cpp
+    src/diart_diarizer.cpp
     src/forced_aligner.cpp
     src/gguf_loader.cpp
     src/mel_spectrogram.cpp
@@ -92,6 +93,10 @@ if(Q3ASR_BUILD_TESTS)
 
     add_executable(q3asr-aligner-test tests/aligner_test.cpp)
     target_link_libraries(q3asr-aligner-test PRIVATE q3asr)
+
+    add_executable(q3asr-diart-diarizer-test tests/diart_diarizer_test.cpp)
+    target_link_libraries(q3asr-diart-diarizer-test PRIVATE q3asr)
+    target_include_directories(q3asr-diart-diarizer-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
     set(_Q3ASR_DEFAULT_TEST_TEXT_MODEL "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/Qwen3-ASR-1.7B-text-Q8_0.gguf")
     set(_Q3ASR_DEFAULT_TEST_MMPROJ_MODEL "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/Qwen3-ASR-1.7B-mmproj.gguf")
@@ -265,6 +270,11 @@ if(Q3ASR_BUILD_TESTS)
                     --expect-last "况"
             )
         endif()
+
+        add_test(
+            NAME q3asr-diart-diarizer
+            COMMAND q3asr-diart-diarizer-test
+        )
     else()
         message(STATUS "q3asr-smoke test not registered because default model/audio files are missing")
     endif()
