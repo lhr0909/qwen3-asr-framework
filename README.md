@@ -52,6 +52,7 @@ Current limitations:
 - forced-align long-audio chunking currently assigns transcript ownership over normalized aligner units by duration, not over punctuation-preserving raw text spans
 - long-audio transcription merging maps aligner-owned normalized units back into decoder text spans, but it is still heuristic and not yet exact-parity on every boundary
 - the forced aligner currently targets Python parity first for English and Chinese; Japanese tokenization is still a best-effort fallback, not a `nagisa`-equivalent port
+- diarization model conversion is experimental: the repo can now package selected ONNX diarization checkpoints into GGUF for C++/ggml-side inspection, but it does not execute those graphs in ggml yet
 
 ## Architecture
 
@@ -143,6 +144,34 @@ Useful CMake options:
 - `-DQ3ASR_BUILD_CLI=ON|OFF`
 - `-DQ3ASR_BUILD_TESTS=ON|OFF`
 - `-DQ3ASR_ENABLE_METAL=ON|OFF`
+
+## Experimental Diarization Model Conversion
+
+You can pull accessible diarization checkpoints from Hugging Face with `uvx hf` and package them into GGUF for local inspection:
+
+```sh
+uvx hf download onnx-community/pyannote-segmentation-3.0 \
+  --local-dir models/hf/diarization/pyannote-segmentation-3.0
+
+uvx hf download chengdongliang/wespeaker voxceleb_resnet34_LM.onnx \
+  --local-dir models/hf/diarization/chengdongliang-wespeaker
+
+uvx --with onnx,numpy,pyyaml python scripts/convert_diarization_onnx_to_gguf.py \
+  --input models/hf/diarization/pyannote-segmentation-3.0/onnx/model_fp16.onnx \
+  --output models/gguf/pyannote-segmentation-3.0-fp16.gguf \
+  --kind speaker-segmentation \
+  --source-repo onnx-community/pyannote-segmentation-3.0 \
+  --source-file onnx/model_fp16.onnx
+
+uvx --with onnx,numpy,pyyaml python scripts/convert_diarization_onnx_to_gguf.py \
+  --input models/hf/diarization/chengdongliang-wespeaker/voxceleb_resnet34_LM.onnx \
+  --output models/gguf/wespeaker-voxceleb-resnet34-LM-f32.gguf \
+  --kind speaker-embedding \
+  --source-repo chengdongliang/wespeaker \
+  --source-file voxceleb_resnet34_LM.onnx
+```
+
+If those GGUFs exist locally, the repo registers `q3asr-diarization-gguf` in `ctest` and validates the metadata/tensor layout through the C++ loader.
 
 ## Run The CLI
 

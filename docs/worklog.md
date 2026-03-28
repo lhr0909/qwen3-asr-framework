@@ -64,6 +64,62 @@
   - it keeps the port honest about what is already implemented
   - it avoids introducing fake "ggml diarization" claims before speaker models actually exist in ggml form
 
+### Diarization Model Bring-Up
+
+- Pulled local diarization model artifacts from Hugging Face with `uvx hf` instead of assuming the default gated pyannote repos were directly available:
+  - `uvx hf download onnx-community/pyannote-segmentation-3.0`
+  - `uvx hf download chengdongliang/wespeaker voxceleb_resnet34_LM.onnx`
+- Confirmed the default `diart` repos are still gated for this account in CLI usage:
+  - `pyannote/segmentation`
+  - `pyannote/embedding`
+  - both returned `Access denied. This repository requires approval.`
+- Added a small ONNX-to-GGUF packaging script:
+  - `scripts/convert_diarization_onnx_to_gguf.py`
+  - it stores graph metadata plus initializer tensors in GGUF for C++/ggml-side inspection
+  - this is intentionally a bring-up format conversion, not a claim that q3asr can already execute arbitrary ONNX graphs
+- Added a C++/ggml-side loader and regression for these packaged diarization GGUFs:
+  - `src/diarization_gguf.cpp`
+  - `src/diarization_gguf.h`
+  - `tests/diarization_gguf_test.cpp`
+  - `q3asr-diarization-gguf`
+- Kept the scope honest about runtime support:
+  - the segmentation ONNX graph includes `Conv`, `LSTM`, `InstanceNormalization`, pooling, and shape-control ops
+  - the embedding ONNX graph is a ResNet-style conv stack with reductions and a final projection
+  - GGUF conversion is straightforward, but full ggml execution still needs dedicated graph/runtime implementation
+
+### Diarization Model Validation
+
+- Verified Hugging Face CLI usage from the official docs and the local tool:
+  - official docs: `uvx hf auth login`, `uvx hf download`, `hf download --local-dir` usage
+- Confirmed account auth locally:
+  - `uvx hf auth whoami`
+- Downloaded accessible diarization models:
+  - `onnx-community/pyannote-segmentation-3.0`
+  - `chengdongliang/wespeaker` `voxceleb_resnet34_LM.onnx`
+- Inspected the downloaded graphs:
+  - segmentation model:
+    - input `input_values` with shape `batch_size,num_channels,num_samples`
+    - output `logits` with shape `batch_size,num_frames,7`
+    - ops include `Conv=2`, `LSTM=4`, `InstanceNormalization=4`
+  - embedding model:
+    - input `feats` with shape `B,T,80`
+    - output `embs` with shape `B,256`
+    - ops include `Conv=36`, `Relu=33`, `Gemm=1`
+- Ran the segmentation ONNX model on `testdata/long-audio.wav` through ONNX Runtime as a reference spot check:
+  - on 60-second slices, the model emitted multiple speaker classes in later windows, e.g.:
+    - `120s`: classes `{0, 2, 3}`
+    - `300s`: classes `{0, 2, 3, 6}`
+  - that is enough evidence that `testdata/long-audio.wav` is a reasonable local diarization fixture for continued bring-up
+
+### Diarization Model Remaining Work
+
+- q3asr still does not execute these diarization ONNX graphs in ggml.
+- The next real runtime milestone is not more container work:
+  - implement the segmentation graph in ggml or add a limited ONNX importer/runtime path
+  - implement the embedding graph plus feature extraction (`80`-bin speaker features for the wespeaker model)
+  - feed those outputs into the existing `DiartDiarizer`
+- If the user wants exact `diart` parity instead of accessible public models, the Hugging Face account still needs repository approval for the gated pyannote checkpoints before CLI download will work.
+
 ## 2026-03-22
 
 ### Thai Long-Audio Follow-Up

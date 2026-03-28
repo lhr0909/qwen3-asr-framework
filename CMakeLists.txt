@@ -46,6 +46,7 @@ find_package(Threads REQUIRED)
 set(Q3ASR_SOURCES
     src/audio_encoder.cpp
     src/decoder_llama.cpp
+    src/diarization_gguf.cpp
     src/diart_diarizer.cpp
     src/forced_aligner.cpp
     src/gguf_loader.cpp
@@ -107,11 +108,17 @@ if(Q3ASR_BUILD_TESTS)
     target_link_libraries(q3asr-diart-diarizer-test PRIVATE q3asr)
     target_include_directories(q3asr-diart-diarizer-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
+    add_executable(q3asr-diarization-gguf-test tests/diarization_gguf_test.cpp)
+    target_link_libraries(q3asr-diarization-gguf-test PRIVATE q3asr)
+    target_include_directories(q3asr-diarization-gguf-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+
     set(_Q3ASR_DEFAULT_TEST_TEXT_MODEL "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/Qwen3-ASR-1.7B-text-Q8_0.gguf")
     set(_Q3ASR_DEFAULT_TEST_MMPROJ_MODEL "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/Qwen3-ASR-1.7B-mmproj.gguf")
     set(_Q3ASR_DEFAULT_TEST_AUDIO "${CMAKE_CURRENT_SOURCE_DIR}/testdata/asr_zh.wav")
     set(_Q3ASR_DEFAULT_TEST_AUDIO_ENGLISH "${CMAKE_CURRENT_SOURCE_DIR}/testdata/q3asr-input.wav")
     set(_Q3ASR_DEFAULT_TEST_ALIGNER_MODEL "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/qwen3-forced-aligner-0.6b-f16.gguf")
+    set(_Q3ASR_DEFAULT_TEST_DIARIZATION_SEGMENTATION_GGUF "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/pyannote-segmentation-3.0-fp16.gguf")
+    set(_Q3ASR_DEFAULT_TEST_DIARIZATION_EMBEDDING_GGUF "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/wespeaker-voxceleb-resnet34-LM-f32.gguf")
 
     set(
         Q3ASR_TEST_TEXT_MODEL
@@ -143,6 +150,18 @@ if(Q3ASR_BUILD_TESTS)
         CACHE FILEPATH
         "Default forced aligner model for alignment regressions"
     )
+    set(
+        Q3ASR_TEST_DIARIZATION_SEGMENTATION_GGUF
+        "${_Q3ASR_DEFAULT_TEST_DIARIZATION_SEGMENTATION_GGUF}"
+        CACHE FILEPATH
+        "Default diarization segmentation GGUF for inspection tests"
+    )
+    set(
+        Q3ASR_TEST_DIARIZATION_EMBEDDING_GGUF
+        "${_Q3ASR_DEFAULT_TEST_DIARIZATION_EMBEDDING_GGUF}"
+        CACHE FILEPATH
+        "Default diarization embedding GGUF for inspection tests"
+    )
 
     if(NOT EXISTS "${Q3ASR_TEST_TEXT_MODEL}" AND EXISTS "${_Q3ASR_DEFAULT_TEST_TEXT_MODEL}")
         set(Q3ASR_TEST_TEXT_MODEL "${_Q3ASR_DEFAULT_TEST_TEXT_MODEL}")
@@ -158,6 +177,12 @@ if(Q3ASR_BUILD_TESTS)
     endif()
     if(NOT EXISTS "${Q3ASR_TEST_ALIGNER_MODEL}" AND EXISTS "${_Q3ASR_DEFAULT_TEST_ALIGNER_MODEL}")
         set(Q3ASR_TEST_ALIGNER_MODEL "${_Q3ASR_DEFAULT_TEST_ALIGNER_MODEL}")
+    endif()
+    if(NOT EXISTS "${Q3ASR_TEST_DIARIZATION_SEGMENTATION_GGUF}" AND EXISTS "${_Q3ASR_DEFAULT_TEST_DIARIZATION_SEGMENTATION_GGUF}")
+        set(Q3ASR_TEST_DIARIZATION_SEGMENTATION_GGUF "${_Q3ASR_DEFAULT_TEST_DIARIZATION_SEGMENTATION_GGUF}")
+    endif()
+    if(NOT EXISTS "${Q3ASR_TEST_DIARIZATION_EMBEDDING_GGUF}" AND EXISTS "${_Q3ASR_DEFAULT_TEST_DIARIZATION_EMBEDDING_GGUF}")
+        set(Q3ASR_TEST_DIARIZATION_EMBEDDING_GGUF "${_Q3ASR_DEFAULT_TEST_DIARIZATION_EMBEDDING_GGUF}")
     endif()
 
     if(
@@ -289,6 +314,18 @@ if(Q3ASR_BUILD_TESTS)
             NAME q3asr-diart-diarizer
             COMMAND q3asr-diart-diarizer-test
         )
+
+        if(
+            EXISTS "${Q3ASR_TEST_DIARIZATION_SEGMENTATION_GGUF}" AND
+            EXISTS "${Q3ASR_TEST_DIARIZATION_EMBEDDING_GGUF}"
+        )
+            add_test(
+                NAME q3asr-diarization-gguf
+                COMMAND q3asr-diarization-gguf-test
+                    --segmentation-model "${Q3ASR_TEST_DIARIZATION_SEGMENTATION_GGUF}"
+                    --embedding-model "${Q3ASR_TEST_DIARIZATION_EMBEDDING_GGUF}"
+            )
+        endif()
     else()
         message(STATUS "q3asr-smoke test not registered because default model/audio files are missing")
     endif()
