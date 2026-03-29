@@ -1,5 +1,69 @@
 # Q3ASR Worklog
 
+## 2026-03-29
+
+### Community-1 Reference Diarization Pipelines
+
+- Added a Python reference helper for pyannote diarization work:
+  - `scripts/pyannote_diarization.py`
+- Kept the scope honest about what is implemented today:
+  - no claim that q3asr executes diarization models in C++ yet
+  - no public C API or C++ CLI wiring yet
+  - this is a Python-side reference layer to validate Community-1 behavior before porting the runtime pieces
+- Added two practical modes based on `pyannote/speaker-diarization-community-1`:
+  - `offline-community1`
+    - runs the full offline pipeline
+    - keeps Community-1's bundled VBx + PLDA clustering path intact
+  - `streaming-community1`
+    - uses overlapping rolling windows on audio loaded in memory
+    - runs chunk-local Community-1 diarization on each window
+    - remaps local chunk speakers online using Community-1 speaker embeddings
+    - commits a stable center strip from each chunk to reduce edge churn
+    - this is intentionally a lower-accuracy reference approximation, not exact offline VBx parity
+- Documented the new reference workflow in `README.md`.
+
+### Community-1 Reference Diarization Validation
+
+- Verified the new script parses and exposes both modes:
+  - `/tmp/pyannote-audio-4/bin/python scripts/pyannote_diarization.py --help`
+  - `python3 -m py_compile scripts/pyannote_diarization.py`
+- Validated offline Community-1 on the two local two-speaker podcast cuts:
+  - `/tmp/pyannote-audio-4/bin/python scripts/pyannote_diarization.py offline-community1 --audio testdata/long-audio.wav --num-speakers 2 --output-json /tmp/q3asr-offline-community1-long-audio.json`
+    - observed: `device=mps`, `speakers=2`, `segments=410`, `exclusive_segments=419`
+  - `/tmp/pyannote-audio-4/bin/python scripts/pyannote_diarization.py offline-community1 --audio testdata/long-audio-2.wav --num-speakers 2 --output-json /tmp/q3asr-offline-community1-long-audio-2.json`
+    - observed: `device=mps`, `speakers=2`, `segments=444`, `exclusive_segments=444`
+- Smoke-tested the streaming approximation on a 60-second slice:
+  - `/tmp/pyannote-audio-4/bin/python scripts/pyannote_diarization.py streaming-community1 --audio /tmp/long-audio-60.wav --num-speakers 2 --window-sec 20 --step-sec 5 --output-json /tmp/q3asr-streaming-community1-60s.json --verbose`
+    - observed: `chunks=9`, `global_speakers=2`, `segments=21`
+- Validated the default streaming settings on both local long podcast cuts:
+  - `/tmp/pyannote-audio-4/bin/python scripts/pyannote_diarization.py streaming-community1 --audio testdata/long-audio.wav --num-speakers 2 --output-json /tmp/q3asr-streaming-community1-long-audio.json`
+    - observed: `device=mps`, `chunks=180`, `global_speakers=2`, `segments=611`
+  - `/tmp/pyannote-audio-4/bin/python scripts/pyannote_diarization.py streaming-community1 --audio testdata/long-audio-2.wav --num-speakers 2 --output-json /tmp/q3asr-streaming-community1-long-audio-2.json`
+    - observed: `device=mps`, `chunks=197`, `global_speakers=2`, `segments=724`
+
+### Community-1 Reference Diarization Remaining Work
+
+- Mirror the validated Python-side structure into the real C++ runtime:
+  - add Community-1-compatible segmentation execution
+  - add Community-1-compatible speaker embedding execution
+  - feed those outputs into the existing internal `DiartDiarizer`
+- Decide whether Community-1 VBx/PLDA should become:
+  - an offline-only refinement stage
+  - or a later micro-batch reconciliation path layered on top of the streaming approximation
+- Add a stable comparison harness between:
+  - offline Community-1
+  - streaming Community-1 approximation
+  - future C++ diarization output
+
+### Community-1 Reference Diarization Gotchas
+
+- Community-1 with modern PyTorch requires a small trusted-checkpoint compatibility shim:
+  - newer `torch.load` defaults to `weights_only=True`
+  - the local script forces `weights_only=False` when the caller leaves it unset so the official pyannote checkpoints can load
+- The streaming mode is not a faithful online implementation of Community-1's VBx/PLDA clustering.
+- It intentionally uses Community-1 at the chunk level, then performs simpler online speaker remapping between chunks.
+- That makes it useful as a design and quality reference, but not as the final parity target.
+
 ## 2026-03-28
 
 ### Diart Port Bring-Up

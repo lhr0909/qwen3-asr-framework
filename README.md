@@ -202,6 +202,63 @@ uvx --with torch,numpy,pyyaml,torchaudio,pyannote.audio==3.1.1 python scripts/co
 
 If those PyTorch-derived GGUFs exist locally, the repo also registers `q3asr-diarization-gguf-pytorch` in `ctest` and validates the metadata/tensor layout through the same C++ loader.
 
+## Reference Pyannote Diarization
+
+While the C++ runtime does not yet execute diarization neural models directly, the repo now ships a Python reference helper:
+
+- `scripts/pyannote_diarization.py`
+
+This script supports two Community-1-based modes:
+
+- `offline-community1`
+  - runs the full offline `pyannote/speaker-diarization-community-1` pipeline
+  - keeps the bundled VBx + PLDA clustering stage intact
+- `streaming-community1`
+  - runs a lower-latency approximation inspired by `diart`
+  - uses overlapping rolling windows
+  - remaps chunk-local speakers online with Community-1 speaker embeddings
+  - commits a stable center strip from each chunk to reduce boundary churn
+  - this is a practical reference path, not exact offline VBx parity
+
+Suggested runtime setup:
+
+```sh
+uv venv --python 3.12 /tmp/pyannote-audio-4
+uv pip install --python /tmp/pyannote-audio-4/bin/python pyannote.audio==4.0.0
+```
+
+The script includes a small `torch.load(..., weights_only=False)` compatibility shim for trusted local Community-1 checkpoints under newer PyTorch releases.
+
+Offline example:
+
+```sh
+/tmp/pyannote-audio-4/bin/python scripts/pyannote_diarization.py \
+  offline-community1 \
+  --audio testdata/long-audio.wav \
+  --num-speakers 2 \
+  --output-json /tmp/q3asr-offline-community1-long-audio.json \
+  --output-rttm /tmp/q3asr-offline-community1-long-audio.rttm
+```
+
+Streaming approximation example:
+
+```sh
+/tmp/pyannote-audio-4/bin/python scripts/pyannote_diarization.py \
+  streaming-community1 \
+  --audio testdata/long-audio.wav \
+  --num-speakers 2 \
+  --window-sec 20 \
+  --step-sec 5 \
+  --output-json /tmp/q3asr-streaming-community1-long-audio.json \
+  --output-rttm /tmp/q3asr-streaming-community1-long-audio.rttm
+```
+
+Notes:
+
+- the offline path is the quality reference
+- the streaming path is intentionally simpler and lower-accuracy
+- both paths currently live in Python so we can validate Community-1 behavior before mirroring the design in C++
+
 ## Run The CLI
 
 Example:
