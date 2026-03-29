@@ -115,7 +115,12 @@ if(Q3ASR_BUILD_TESTS)
 
     add_executable(q3asr-offline-diarizer-test tests/offline_diarizer_test.cpp)
     target_link_libraries(q3asr-offline-diarizer-test PRIVATE q3asr)
-    target_include_directories(q3asr-offline-diarizer-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_include_directories(
+        q3asr-offline-diarizer-test
+        PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/src"
+            "${Q3ASR_LLAMA_CPP_SOURCE_DIR}/vendor"
+    )
 
     set(_Q3ASR_DEFAULT_TEST_TEXT_MODEL "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/Qwen3-ASR-1.7B-text-Q8_0.gguf")
     set(_Q3ASR_DEFAULT_TEST_MMPROJ_MODEL "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/Qwen3-ASR-1.7B-mmproj.gguf")
@@ -124,7 +129,9 @@ if(Q3ASR_BUILD_TESTS)
     set(_Q3ASR_DEFAULT_TEST_ALIGNER_MODEL "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/qwen3-forced-aligner-0.6b-f16.gguf")
     set(_Q3ASR_DEFAULT_TEST_DIARIZATION_SEGMENTATION_GGUF "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/pyannote-segmentation-3.0-pytorch-f32.gguf")
     set(_Q3ASR_DEFAULT_TEST_DIARIZATION_EMBEDDING_GGUF "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/pyannote-wespeaker-voxceleb-resnet34-LM-pytorch-f32.gguf")
+    set(_Q3ASR_DEFAULT_TEST_DIARIZATION_CLUSTERING_GGUF "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/pyannote-speaker-diarization-community-1-plda-f32.gguf")
     set(_Q3ASR_DEFAULT_TEST_COMMUNITY1_BUNDLE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/models/hf/diarization/pyannote-speaker-diarization-community-1")
+    set(_Q3ASR_DEFAULT_TEST_COMMUNITY1_FIXTURE "${CMAKE_CURRENT_SOURCE_DIR}/tests/data/community1-offline-20s-long-audio.json")
     set(_Q3ASR_LEGACY_TEST_DIARIZATION_SEGMENTATION_GGUF "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/pyannote-segmentation-3.0-fp16.gguf")
     set(_Q3ASR_LEGACY_TEST_DIARIZATION_EMBEDDING_GGUF "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/wespeaker-voxceleb-resnet34-LM-f32.gguf")
 
@@ -171,10 +178,22 @@ if(Q3ASR_BUILD_TESTS)
         "Default official diarization embedding GGUF for inspection tests"
     )
     set(
+        Q3ASR_TEST_DIARIZATION_CLUSTERING_GGUF
+        "${_Q3ASR_DEFAULT_TEST_DIARIZATION_CLUSTERING_GGUF}"
+        CACHE FILEPATH
+        "Default Community-1 clustering GGUF for the offline diarizer test"
+    )
+    set(
         Q3ASR_TEST_COMMUNITY1_BUNDLE_DIR
         "${_Q3ASR_DEFAULT_TEST_COMMUNITY1_BUNDLE_DIR}"
         CACHE PATH
         "Default Community-1 bundle directory for offline diarization asset tests"
+    )
+    set(
+        Q3ASR_TEST_COMMUNITY1_FIXTURE
+        "${_Q3ASR_DEFAULT_TEST_COMMUNITY1_FIXTURE}"
+        CACHE FILEPATH
+        "Default Community-1 offline clustering reference fixture"
     )
 
     if(NOT EXISTS "${Q3ASR_TEST_TEXT_MODEL}" AND EXISTS "${_Q3ASR_DEFAULT_TEST_TEXT_MODEL}")
@@ -358,10 +377,10 @@ if(Q3ASR_BUILD_TESTS)
 
         if(
             EXISTS "${Q3ASR_TEST_COMMUNITY1_BUNDLE_DIR}/config.yaml" AND
-            EXISTS "${Q3ASR_TEST_COMMUNITY1_BUNDLE_DIR}/plda/plda.npz" AND
-            EXISTS "${Q3ASR_TEST_COMMUNITY1_BUNDLE_DIR}/plda/xvec_transform.npz" AND
             EXISTS "${Q3ASR_TEST_DIARIZATION_SEGMENTATION_GGUF}" AND
-            EXISTS "${Q3ASR_TEST_DIARIZATION_EMBEDDING_GGUF}"
+            EXISTS "${Q3ASR_TEST_DIARIZATION_EMBEDDING_GGUF}" AND
+            EXISTS "${Q3ASR_TEST_DIARIZATION_CLUSTERING_GGUF}" AND
+            EXISTS "${Q3ASR_TEST_COMMUNITY1_FIXTURE}"
         )
             add_test(
                 NAME q3asr-offline-diarizer
@@ -369,6 +388,8 @@ if(Q3ASR_BUILD_TESTS)
                     --community1-bundle-dir "${Q3ASR_TEST_COMMUNITY1_BUNDLE_DIR}"
                     --segmentation-model "${Q3ASR_TEST_DIARIZATION_SEGMENTATION_GGUF}"
                     --embedding-model "${Q3ASR_TEST_DIARIZATION_EMBEDDING_GGUF}"
+                    --clustering-model "${Q3ASR_TEST_DIARIZATION_CLUSTERING_GGUF}"
+                    --reference-fixture "${Q3ASR_TEST_COMMUNITY1_FIXTURE}"
             )
         endif()
     else()

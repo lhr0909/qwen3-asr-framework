@@ -167,6 +167,10 @@ uvx --with torch,numpy,pyyaml,torchaudio,pyannote.audio==3.1.1 python scripts/co
   --output models/gguf/pyannote-wespeaker-voxceleb-resnet34-LM-pytorch-f32.gguf \
   --kind speaker-embedding \
   --source-repo pyannote/wespeaker-voxceleb-resnet34-LM
+
+uvx --with numpy,scipy,pyyaml python scripts/convert_community1_plda_to_gguf.py \
+  --bundle-dir models/hf/diarization/pyannote-speaker-diarization-community-1 \
+  --output models/gguf/pyannote-speaker-diarization-community-1-plda-f32.gguf
 ```
 
 If those PyTorch-derived GGUFs exist locally, the repo registers `q3asr-diarization-gguf` in `ctest` and validates the metadata/tensor layout through the C++ loader.
@@ -181,9 +185,10 @@ The repo currently has three diarization-oriented surfaces:
   - C++ online clustering and delayed aggregation derived from `diart`
   - expects external segmentation scores and speaker embeddings
 - `src/offline_diarizer.cpp`
-  - C++ asset/config wrapper for Community-1
-  - validates the official PyTorch-derived GGUF models plus Community-1's bundled PLDA assets
-  - does not execute raw-audio diarization natively yet
+  - C++ Community-1 offline clustering stage
+  - loads the official segmentation and embedding GGUFs plus a converted Community-1 PLDA GGUF
+  - runs VBx-style offline clustering for precomputed segmentations and speaker embeddings
+  - still does not execute raw-audio diarization natively yet
 
 The Python reference helper supports two Community-1-based modes:
 
@@ -205,6 +210,17 @@ uv pip install --python /tmp/pyannote-audio-4/bin/python pyannote.audio==4.0.0
 ```
 
 The script includes a small `torch.load(..., weights_only=False)` compatibility shim for trusted local Community-1 checkpoints under newer PyTorch releases.
+
+You can also export a short clustering fixture from the Python reference path to compare the C++ offline stage against a real Community-1 run:
+
+```sh
+/tmp/pyannote-audio-4/bin/python scripts/export_community1_offline_fixture.py \
+  --audio testdata/long-audio.wav \
+  --start-sec 0 \
+  --duration-sec 20 \
+  --num-speakers 2 \
+  --output tests/data/community1-offline-20s-long-audio.json
+```
 
 Offline example:
 
@@ -235,8 +251,8 @@ Notes:
 - the offline path is the quality reference
 - the streaming path is intentionally simpler and lower-accuracy
 - the C++ `streaming_diarizer` currently covers only the online clustering logic
-- the C++ `offline_diarizer` currently covers only official-asset loading and config validation
-- native C++ Community-1 execution still needs segmentation forward, speaker-embedding forward, PLDA scoring, and VBx decoding
+- the C++ `offline_diarizer` now covers the native Community-1 clustering stage for precomputed features
+- native raw-audio Community-1 execution still needs segmentation forward and speaker-embedding forward
 
 ## Run The CLI
 

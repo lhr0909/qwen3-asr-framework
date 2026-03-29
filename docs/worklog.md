@@ -2,6 +2,68 @@
 
 ## 2026-03-29
 
+### Native Offline Clustering Bring-Up
+
+- Extended `src/offline_diarizer.cpp` and `src/offline_diarizer.h` from an asset wrapper into a real native Community-1 clustering stage for precomputed features:
+  - loads the official segmentation and embedding GGUFs
+  - loads a converted Community-1 PLDA GGUF
+  - runs the x-vector transform and PLDA projection in C++
+  - runs centroid-linkage AHC initialization in C++
+  - runs the VBx update loop in C++
+  - applies constrained Hungarian assignment back onto the per-chunk local speakers
+- Added two helper scripts:
+  - `scripts/convert_community1_plda_to_gguf.py`
+    - converts `plda/plda.npz` and `plda/xvec_transform.npz` into a GGUF the C++ runtime can load directly
+  - `scripts/export_community1_offline_fixture.py`
+    - exports a short Python-reference fixture with binarized segmentations, speaker embeddings, expected hard clusters, and expected centroids
+- Expanded `tests/offline_diarizer_test.cpp` from asset validation into a real parity regression:
+  - loads a short Community-1 fixture exported from the Python reference
+  - runs the native C++ offline clustering stage
+  - checks the predicted hard clusters and centroids against the Python reference output
+- Updated `CMakeLists.txt` so `q3asr-offline-diarizer` now requires:
+  - the official segmentation GGUF
+  - the official embedding GGUF
+  - the converted Community-1 PLDA GGUF
+  - the exported short reference fixture
+- Relaxed `src/diarization_gguf.cpp` so the common loader accepts both:
+  - PyTorch-derived diarization GGUFs
+  - NumPy-derived clustering GGUFs
+
+### Native Offline Clustering Validation
+
+- Generated the converted Community-1 PLDA GGUF locally:
+  - `uvx --with numpy,scipy,pyyaml python scripts/convert_community1_plda_to_gguf.py --bundle-dir models/hf/diarization/pyannote-speaker-diarization-community-1 --output models/gguf/pyannote-speaker-diarization-community-1-plda-f32.gguf`
+- Generated a short 20-second Python-reference fixture from `testdata/long-audio.wav`:
+  - `/tmp/pyannote-audio-4/bin/python scripts/export_community1_offline_fixture.py --audio testdata/long-audio.wav --start-sec 0 --duration-sec 20 --num-speakers 2 --output tests/data/community1-offline-20s-long-audio.json`
+  - observed: `num_chunks=11`, `num_frames=589`, `num_speakers=3`, `embedding_dim=256`
+- Rebuilt successfully:
+  - `cmake -S . -B build`
+  - `cmake --build build -j`
+- Verified the focused diarization tests:
+  - `./build/q3asr-offline-diarizer-test --community1-bundle-dir models/hf/diarization/pyannote-speaker-diarization-community-1 --segmentation-model models/gguf/pyannote-segmentation-3.0-pytorch-f32.gguf --embedding-model models/gguf/pyannote-wespeaker-voxceleb-resnet34-LM-pytorch-f32.gguf --clustering-model models/gguf/pyannote-speaker-diarization-community-1-plda-f32.gguf --reference-fixture testdata/diarization/community1-offline-20s-long-audio.json`
+    - observed: `offline_diarizer_test passed`
+  - `ctest --test-dir build --output-on-failure -R 'q3asr-(offline-diarizer|diarization-gguf|streaming-diarizer)'`
+    - observed: `3/3` passing
+- Re-ran the full test suite:
+  - `ctest --test-dir build --output-on-failure`
+  - observed: `12/12` passing
+
+### Native Offline Clustering Remaining Work
+
+- The C++ offline path now covers the Community-1 clustering half, not the raw-audio front half.
+- The remaining native gaps are:
+  - segmentation model forward from the official GGUF
+  - speaker-embedding model forward from the official GGUF
+  - reconstruction of final diarization/exclusive diarization directly from native segmentations
+- The current parity test depends on a short tracked fixture under `tests/data/`.
+- That fixture is intentionally short to keep `ctest` practical, so it validates the native clustering stage, not full-dataset quality.
+
+### Native Offline Clustering Gotchas
+
+- The new PLDA GGUF uses `diarization.serialization_format = "numpy"`, so the common GGUF loader needed to stop assuming every diarization artifact was PyTorch-derived.
+- The offline parity test currently compares against the Python reference after a short fixture export step instead of running the full Python pipeline inside `ctest`.
+- This keeps the regression fast and stable, but it also means the native C++ path is only proven against the exported intermediate features, not yet against raw waveform inference.
+
 ### Streaming / Offline Diarizer Split
 
 - Renamed the `diart`-derived C++ online module to the clearer streaming name:

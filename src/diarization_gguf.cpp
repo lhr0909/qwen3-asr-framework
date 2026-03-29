@@ -100,7 +100,7 @@ bool DiarizationGGUFLoader::parse_metadata(const gguf_context * ctx, diarization
         return false;
     }
 
-    if (model.serialization_format != "pytorch") {
+    if (model.serialization_format != "pytorch" && model.serialization_format != "numpy") {
         error_msg_ = "Unsupported diarization GGUF serialization format: " + model.serialization_format;
         return false;
     }
