@@ -2,6 +2,49 @@
 
 ## 2026-03-29
 
+### Streaming / Offline Diarizer Split
+
+- Renamed the `diart`-derived C++ online module to the clearer streaming name:
+  - `src/streaming_diarizer.cpp`
+  - `src/streaming_diarizer.h`
+  - `tests/streaming_diarizer_test.cpp`
+  - `q3asr-streaming-diarizer`
+- Added a new C++ `offline_diarizer` surface:
+  - `src/offline_diarizer.cpp`
+  - `src/offline_diarizer.h`
+  - `tests/offline_diarizer_test.cpp`
+- Kept the scope honest:
+  - `offline_diarizer` currently validates the Community-1 bundle config, PLDA assets, and official PyTorch-derived GGUFs
+  - it does not claim to execute Community-1 from raw audio in C++ yet
+- Cleaned the old diarization ONNX packaging path out of the active repo surface:
+  - removed `scripts/convert_diarization_onnx_to_gguf.py`
+  - switched the C++ GGUF loader test and CMake defaults to the official PyTorch-derived GGUFs only
+  - removed the ONNX-oriented README workflow
+
+### Streaming / Offline Diarizer Validation
+
+- Reconfigured and rebuilt successfully after the rename and cleanup:
+  - `cmake -S . -B build`
+  - `cmake --build build -j`
+- Verified the diarization-focused C++ tests:
+  - `ctest --test-dir build --output-on-failure -R 'q3asr-(streaming-diarizer|diarization-gguf|offline-diarizer)'`
+  - observed: `3/3` passing
+- The new offline C++ asset wrapper validates:
+  - Community-1 config parsing from `models/hf/diarization/pyannote-speaker-diarization-community-1/config.yaml`
+  - presence of `plda/plda.npz` and `plda/xvec_transform.npz`
+  - official segmentation GGUF metadata/tensors
+  - official embedding GGUF metadata/tensors
+
+### Streaming / Offline Diarizer Remaining Work
+
+- Native offline Community-1 execution is still not implemented in C++.
+- The real missing pieces are:
+  - segmentation model forward from the official PyTorch-derived GGUF
+  - speaker-embedding model forward from the official PyTorch-derived GGUF
+  - PLDA scoring in C++
+  - VBx decoding in C++
+- Until those exist, Python remains the only end-to-end Community-1 execution reference.
+
 ### Community-1 Reference Diarization Pipelines
 
 - Added a Python reference helper for pyannote diarization work:
@@ -46,7 +89,7 @@
 - Mirror the validated Python-side structure into the real C++ runtime:
   - add Community-1-compatible segmentation execution
   - add Community-1-compatible speaker embedding execution
-  - feed those outputs into the existing internal `DiartDiarizer`
+  - feed those outputs into the existing internal `StreamingDiarizer`
 - Decide whether Community-1 VBx/PLDA should become:
   - an offline-only refinement stage
   - or a later micro-batch reconciliation path layered on top of the streaming approximation
@@ -69,22 +112,22 @@
 ### Diart Port Bring-Up
 
 - Studied the upstream `diart` package and kept the port scoped to the parts that are both portable and useful in this repo today:
-  - `src/diart_diarizer.cpp`
-  - `src/diart_diarizer.h`
+  - `src/streaming_diarizer.cpp`
+  - `src/streaming_diarizer.h`
 - Ported the online diarization runtime pieces instead of vendoring the Python package or pretending the pyannote models were already portable:
   - overlap-aware speaker weighting with the `diart` Equation-2 style penalty
   - ggml-backed per-frame softmax for that weighting step
   - L2 speaker-embedding normalization
   - delayed overlap aggregation with `mean`, `hamming`, and `first` strategies
   - constrained online speaker clustering with Hungarian assignment, new-speaker thresholding, and centroid updates
-  - a small stateful `DiartDiarizer` wrapper that emits aggregated and binarized speaker activity per step
+  - a small stateful `StreamingDiarizer` wrapper that emits aggregated and binarized speaker activity per step
 - Kept the new surface internal for now:
   - no public C API additions yet
   - no CLI wiring yet
   - no attempt to claim end-to-end diarization quality without ggml speaker models
 - Added a synthetic regression target:
-  - `tests/diart_diarizer_test.cpp`
-  - `q3asr-diart-diarizer`
+  - `tests/streaming_diarizer_test.cpp`
+  - `q3asr-streaming-diarizer`
 - Wired the module into the normal library build in `CMakeLists.txt`.
 
 ### Diart Port Validation
@@ -93,8 +136,8 @@
   - `cmake -S . -B build`
   - `cmake --build build -j`
 - Verified the new diarization regression directly:
-  - `./build/q3asr-diart-diarizer-test`
-  - observed: `diart_diarizer_test passed`
+  - `./build/q3asr-streaming-diarizer-test`
+  - observed: `streaming_diarizer_test passed`
 - Re-ran the full repo suite after adding the new module:
   - `ctest --test-dir build --output-on-failure`
   - observed: `10/10` passing
@@ -220,7 +263,7 @@
 - The next real runtime milestone is not more container work:
   - implement the segmentation graph in ggml or add a limited ONNX importer/runtime path
   - implement the embedding graph plus feature extraction (`80`-bin speaker features for the wespeaker model)
-  - feed those outputs into the existing `DiartDiarizer`
+  - feed those outputs into the existing `StreamingDiarizer`
 - If the user wants exact `diart` parity instead of accessible public models, the Hugging Face account still needs repository approval for the gated pyannote checkpoints before CLI download will work.
 
 ## 2026-03-22

@@ -147,35 +147,7 @@ Useful CMake options:
 
 ## Experimental Diarization Model Conversion
 
-You can pull diarization checkpoints from Hugging Face and package them into GGUF for local inspection.
-
-Accessible ONNX packaging path:
-
-```sh
-uvx hf download onnx-community/pyannote-segmentation-3.0 \
-  --local-dir models/hf/diarization/pyannote-segmentation-3.0
-
-uvx hf download chengdongliang/wespeaker voxceleb_resnet34_LM.onnx \
-  --local-dir models/hf/diarization/chengdongliang-wespeaker
-
-uvx --with onnx,numpy,pyyaml python scripts/convert_diarization_onnx_to_gguf.py \
-  --input models/hf/diarization/pyannote-segmentation-3.0/onnx/model_fp16.onnx \
-  --output models/gguf/pyannote-segmentation-3.0-fp16.gguf \
-  --kind speaker-segmentation \
-  --source-repo onnx-community/pyannote-segmentation-3.0 \
-  --source-file onnx/model_fp16.onnx
-
-uvx --with onnx,numpy,pyyaml python scripts/convert_diarization_onnx_to_gguf.py \
-  --input models/hf/diarization/chengdongliang-wespeaker/voxceleb_resnet34_LM.onnx \
-  --output models/gguf/wespeaker-voxceleb-resnet34-LM-f32.gguf \
-  --kind speaker-embedding \
-  --source-repo chengdongliang/wespeaker \
-  --source-file voxceleb_resnet34_LM.onnx
-```
-
-If those GGUFs exist locally, the repo registers `q3asr-diarization-gguf` in `ctest` and validates the metadata/tensor layout through the C++ loader.
-
-Official PyTorch checkpoint packaging path:
+You can pull the official pyannote checkpoints from Hugging Face and package them into GGUF for local inspection.
 
 ```sh
 uvx hf download pyannote/segmentation-3.0 \
@@ -183,9 +155,6 @@ uvx hf download pyannote/segmentation-3.0 \
 
 uvx hf download pyannote/wespeaker-voxceleb-resnet34-LM \
   --local-dir models/hf/diarization/pyannote-wespeaker-voxceleb-resnet34-LM
-
-uvx hf download pyannote/speaker-diarization-3.1 \
-  --local-dir models/hf/diarization/pyannote-speaker-diarization-3.1
 
 uvx --with torch,numpy,pyyaml,torchaudio,pyannote.audio==3.1.1 python scripts/convert_diarization_pytorch_to_gguf.py \
   --input-dir models/hf/diarization/pyannote-segmentation-3.0 \
@@ -200,15 +169,23 @@ uvx --with torch,numpy,pyyaml,torchaudio,pyannote.audio==3.1.1 python scripts/co
   --source-repo pyannote/wespeaker-voxceleb-resnet34-LM
 ```
 
-If those PyTorch-derived GGUFs exist locally, the repo also registers `q3asr-diarization-gguf-pytorch` in `ctest` and validates the metadata/tensor layout through the same C++ loader.
+If those PyTorch-derived GGUFs exist locally, the repo registers `q3asr-diarization-gguf` in `ctest` and validates the metadata/tensor layout through the C++ loader.
 
 ## Reference Pyannote Diarization
 
-While the C++ runtime does not yet execute diarization neural models directly, the repo now ships a Python reference helper:
+The repo currently has three diarization-oriented surfaces:
 
 - `scripts/pyannote_diarization.py`
+  - Python reference helper for quality checks and algorithm study
+- `src/streaming_diarizer.cpp`
+  - C++ online clustering and delayed aggregation derived from `diart`
+  - expects external segmentation scores and speaker embeddings
+- `src/offline_diarizer.cpp`
+  - C++ asset/config wrapper for Community-1
+  - validates the official PyTorch-derived GGUF models plus Community-1's bundled PLDA assets
+  - does not execute raw-audio diarization natively yet
 
-This script supports two Community-1-based modes:
+The Python reference helper supports two Community-1-based modes:
 
 - `offline-community1`
   - runs the full offline `pyannote/speaker-diarization-community-1` pipeline
@@ -257,7 +234,9 @@ Notes:
 
 - the offline path is the quality reference
 - the streaming path is intentionally simpler and lower-accuracy
-- both paths currently live in Python so we can validate Community-1 behavior before mirroring the design in C++
+- the C++ `streaming_diarizer` currently covers only the online clustering logic
+- the C++ `offline_diarizer` currently covers only official-asset loading and config validation
+- native C++ Community-1 execution still needs segmentation forward, speaker-embedding forward, PLDA scoring, and VBx decoding
 
 ## Run The CLI
 

@@ -6,6 +6,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <sstream>
 
 namespace q3asr {
 
@@ -25,15 +26,6 @@ int32_t get_u32(const gguf_context * ctx, const char * key, int32_t fallback = 0
 
 ggml_tensor * diarization_gguf_model::find_tensor(const std::string & name) const {
     return ctx != nullptr ? ggml_get_tensor(ctx, name.c_str()) : nullptr;
-}
-
-int32_t diarization_gguf_model::find_op_count(const std::string & name) const {
-    for (const diarization_model_op & op : op_counts) {
-        if (op.name == name) {
-            return op.count;
-        }
-    }
-    return 0;
 }
 
 bool DiarizationGGUFLoader::load(const std::string & path, diarization_gguf_model & model) {
@@ -91,16 +83,6 @@ bool DiarizationGGUFLoader::parse_metadata(const gguf_context * ctx, diarization
     model.specifications_repr = get_string(ctx, "diarization.pytorch.specifications_repr");
     model.tensor_count = get_u32(ctx, "diarization.tensor_count");
     model.top_level_key_count = get_u32(ctx, "diarization.pytorch.top_level_key_count");
-    model.ir_version = get_u32(ctx, "diarization.onnx.ir_version");
-    model.initializer_count = get_u32(ctx, "diarization.onnx.initializer_count");
-    model.node_count = get_u32(ctx, "diarization.onnx.node_count");
-
-    if (model.serialization_format.empty()) {
-        model.serialization_format = model.ir_version > 0 ? "onnx" : "pytorch";
-    }
-    if (model.tensor_count <= 0) {
-        model.tensor_count = model.initializer_count;
-    }
 
     if (
         model.architecture.empty() ||
@@ -108,59 +90,19 @@ bool DiarizationGGUFLoader::parse_metadata(const gguf_context * ctx, diarization
         model.serialization_format.empty() ||
         model.tensor_count <= 0
     ) {
-        error_msg_ = "Invalid or incomplete diarization GGUF metadata";
+        std::ostringstream error;
+        error << "Invalid or incomplete diarization GGUF metadata"
+              << " architecture='" << model.architecture << "'"
+              << " kind='" << model.kind << "'"
+              << " serialization_format='" << model.serialization_format << "'"
+              << " tensor_count=" << model.tensor_count;
+        error_msg_ = error.str();
         return false;
     }
 
-    if (model.serialization_format == "pytorch") {
-        return true;
-    }
-
-    if (model.serialization_format != "onnx") {
+    if (model.serialization_format != "pytorch") {
         error_msg_ = "Unsupported diarization GGUF serialization format: " + model.serialization_format;
         return false;
-    }
-
-    if (model.ir_version <= 0 || model.initializer_count <= 0) {
-        error_msg_ = "Invalid or incomplete diarization ONNX metadata";
-        return false;
-    }
-
-    const int32_t input_count = get_u32(ctx, "diarization.onnx.input_count");
-    const int32_t output_count = get_u32(ctx, "diarization.onnx.output_count");
-    const int32_t op_count = get_u32(ctx, "diarization.onnx.op_count");
-
-    for (int32_t i = 0; i < input_count; ++i) {
-        diarization_model_io io;
-        io.name = get_string(ctx, ("diarization.onnx.input." + std::to_string(i) + ".name").c_str());
-        io.shape = get_string(ctx, ("diarization.onnx.input." + std::to_string(i) + ".shape").c_str());
-        if (io.name.empty()) {
-            error_msg_ = "Missing diarization ONNX input metadata";
-            return false;
-        }
-        model.inputs.push_back(std::move(io));
-    }
-
-    for (int32_t i = 0; i < output_count; ++i) {
-        diarization_model_io io;
-        io.name = get_string(ctx, ("diarization.onnx.output." + std::to_string(i) + ".name").c_str());
-        io.shape = get_string(ctx, ("diarization.onnx.output." + std::to_string(i) + ".shape").c_str());
-        if (io.name.empty()) {
-            error_msg_ = "Missing diarization ONNX output metadata";
-            return false;
-        }
-        model.outputs.push_back(std::move(io));
-    }
-
-    for (int32_t i = 0; i < op_count; ++i) {
-        diarization_model_op op;
-        op.name = get_string(ctx, ("diarization.onnx.op." + std::to_string(i) + ".name").c_str());
-        op.count = get_u32(ctx, ("diarization.onnx.op." + std::to_string(i) + ".count").c_str());
-        if (op.name.empty()) {
-            error_msg_ = "Missing diarization ONNX op-count metadata";
-            return false;
-        }
-        model.op_counts.push_back(std::move(op));
     }
 
     return true;
@@ -264,10 +206,6 @@ void free_diarization_gguf_model(diarization_gguf_model & model) {
         model.mmap_addr = nullptr;
         model.mmap_size = 0;
     }
-
-    model.inputs.clear();
-    model.outputs.clear();
-    model.op_counts.clear();
     model.tensor_names.clear();
     model = {};
 }

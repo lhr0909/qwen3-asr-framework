@@ -1,4 +1,4 @@
-#include "diart_diarizer.h"
+#include "streaming_diarizer.h"
 
 #include <cmath>
 #include <iostream>
@@ -31,7 +31,7 @@ bool test_overlap_penalty() {
     q3asr::diarization_config config;
     config.gamma = 1.0f;
     config.beta = 1.0f;
-    q3asr::DiartDiarizer diarizer(config);
+    q3asr::StreamingDiarizer diarizer(config);
 
     q3asr::diarization_window segmentation;
     segmentation.start_time_seconds = 0.0f;
@@ -61,7 +61,7 @@ bool test_overlap_penalty() {
 }
 
 bool test_embedding_normalization() {
-    q3asr::DiartDiarizer diarizer;
+    q3asr::StreamingDiarizer diarizer;
     const float embeddings[] = {
         3.0f, 4.0f,
         0.0f, 2.0f,
@@ -194,7 +194,7 @@ bool test_pipeline() {
     config.delta_new = 0.2f;
     config.max_speakers = 4;
 
-    q3asr::DiartDiarizer diarizer(config);
+    q3asr::StreamingDiarizer diarizer(config);
 
     q3asr::diarization_window seg1;
     seg1.start_time_seconds = 0.0f;
@@ -258,10 +258,10 @@ int main() {
         std::cerr << "aggregation_ok=" << aggregation_ok << "\n";
         std::cerr << "clustering_ok=" << clustering_ok << "\n";
         std::cerr << "pipeline_ok=" << pipeline_ok << "\n";
-        std::cerr << "diart_diarizer_test failed\n";
+        std::cerr << "streaming_diarizer_test failed\n";
         return 1;
     }
 
-    std::cout << "diart_diarizer_test passed\n";
+    std::cout << "streaming_diarizer_test passed\n";
     return 0;
 }

@@ -102,9 +102,9 @@ private:
     std::vector<bool> blocked_centers_;
 };
 
-class DiartDiarizer {
+class StreamingDiarizer {
 public:
-    explicit DiartDiarizer(const diarization_config & config = {});
+    explicit StreamingDiarizer(const diarization_config & config = {});
 
     void reset();
 

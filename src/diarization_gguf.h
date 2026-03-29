@@ -5,21 +5,10 @@
 #include "gguf.h"
 
 #include <cstddef>
-#include <map>
 #include <string>
 #include <vector>
 
 namespace q3asr {
-
-struct diarization_model_io {
-    std::string name;
-    std::string shape;
-};
-
-struct diarization_model_op {
-    std::string name;
-    int32_t count = 0;
-};
 
 struct diarization_gguf_model {
     std::string architecture;
@@ -43,13 +32,6 @@ struct diarization_gguf_model {
     std::string specifications_repr;
     int32_t tensor_count = 0;
     int32_t top_level_key_count = 0;
-    int32_t ir_version = 0;
-    int32_t initializer_count = 0;
-    int32_t node_count = 0;
-
-    std::vector<diarization_model_io> inputs;
-    std::vector<diarization_model_io> outputs;
-    std::vector<diarization_model_op> op_counts;
     std::vector<std::string> tensor_names;
 
     ggml_context * ctx = nullptr;
@@ -58,7 +40,6 @@ struct diarization_gguf_model {
     size_t mmap_size = 0;
 
     ggml_tensor * find_tensor(const std::string & name) const;
-    int32_t find_op_count(const std::string & name) const;
 };
 
 class DiarizationGGUFLoader {

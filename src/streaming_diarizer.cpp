@@ -1,4 +1,4 @@
-#include "diart_diarizer.h"
+#include "streaming_diarizer.h"
 
 #include "ggml-cpu.h"
 #include "ggml.h"
@@ -772,21 +772,21 @@ diarization_window OnlineSpeakerClustering::apply_mapping(
     return mapped;
 }
 
-DiartDiarizer::DiartDiarizer(const diarization_config & config) :
+StreamingDiarizer::StreamingDiarizer(const diarization_config & config) :
     config_(config),
     clustering_(config.tau_active, config.rho_update, config.delta_new, config.max_speakers),
     prediction_aggregation_(config.step_seconds, config.latency_seconds, DiarizationAggregationStrategy::Hamming) {
     if (config_.step_seconds <= 0.0f || config_.latency_seconds < config_.step_seconds) {
-        throw std::invalid_argument("diart diarizer requires 0 < step <= latency");
+        throw std::invalid_argument("streaming diarizer requires 0 < step <= latency");
     }
 }
 
-void DiartDiarizer::reset() {
+void StreamingDiarizer::reset() {
     clustering_.reset();
     prediction_buffer_.clear();
 }
 
-diarization_window DiartDiarizer::compute_overlap_aware_weights(const diarization_window & segmentation) const {
+diarization_window StreamingDiarizer::compute_overlap_aware_weights(const diarization_window & segmentation) const {
     validate_window(segmentation);
     diarization_window weights = segmentation;
     if (segmentation.num_frames == 0 || segmentation.num_speakers == 0) {
@@ -827,7 +827,7 @@ diarization_window DiartDiarizer::compute_overlap_aware_weights(const diarizatio
     return weights;
 }
 
-std::vector<float> DiartDiarizer::normalize_embeddings(
+std::vector<float> StreamingDiarizer::normalize_embeddings(
     const float * embeddings,
     int num_speakers,
     int embedding_dim,
@@ -867,7 +867,7 @@ std::vector<float> DiartDiarizer::normalize_embeddings(
     return normalized;
 }
 
-diarization_result DiartDiarizer::process_window(
+diarization_result StreamingDiarizer::process_window(
     const diarization_window & segmentation,
     const float * embeddings,
     int embedding_dim
@@ -897,7 +897,7 @@ diarization_result DiartDiarizer::process_window(
     return result;
 }
 
-diarization_window DiartDiarizer::binarize(const diarization_window & scores) const {
+diarization_window StreamingDiarizer::binarize(const diarization_window & scores) const {
     diarization_window result = scores;
     for (float & value : result.values) {
         value = value >= config_.tau_active ? 1.0f : 0.0f;

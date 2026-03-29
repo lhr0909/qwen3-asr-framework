@@ -47,7 +47,8 @@ set(Q3ASR_SOURCES
     src/audio_encoder.cpp
     src/decoder_llama.cpp
     src/diarization_gguf.cpp
-    src/diart_diarizer.cpp
+    src/offline_diarizer.cpp
+    src/streaming_diarizer.cpp
     src/forced_aligner.cpp
     src/gguf_loader.cpp
     src/mel_spectrogram.cpp
@@ -104,23 +105,28 @@ if(Q3ASR_BUILD_TESTS)
     target_link_libraries(q3asr-normalization-test PRIVATE q3asr)
     target_include_directories(q3asr-normalization-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
-    add_executable(q3asr-diart-diarizer-test tests/diart_diarizer_test.cpp)
-    target_link_libraries(q3asr-diart-diarizer-test PRIVATE q3asr)
-    target_include_directories(q3asr-diart-diarizer-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    add_executable(q3asr-streaming-diarizer-test tests/streaming_diarizer_test.cpp)
+    target_link_libraries(q3asr-streaming-diarizer-test PRIVATE q3asr)
+    target_include_directories(q3asr-streaming-diarizer-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
     add_executable(q3asr-diarization-gguf-test tests/diarization_gguf_test.cpp)
     target_link_libraries(q3asr-diarization-gguf-test PRIVATE q3asr)
     target_include_directories(q3asr-diarization-gguf-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+
+    add_executable(q3asr-offline-diarizer-test tests/offline_diarizer_test.cpp)
+    target_link_libraries(q3asr-offline-diarizer-test PRIVATE q3asr)
+    target_include_directories(q3asr-offline-diarizer-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
     set(_Q3ASR_DEFAULT_TEST_TEXT_MODEL "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/Qwen3-ASR-1.7B-text-Q8_0.gguf")
     set(_Q3ASR_DEFAULT_TEST_MMPROJ_MODEL "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/Qwen3-ASR-1.7B-mmproj.gguf")
     set(_Q3ASR_DEFAULT_TEST_AUDIO "${CMAKE_CURRENT_SOURCE_DIR}/testdata/asr_zh.wav")
     set(_Q3ASR_DEFAULT_TEST_AUDIO_ENGLISH "${CMAKE_CURRENT_SOURCE_DIR}/testdata/q3asr-input.wav")
     set(_Q3ASR_DEFAULT_TEST_ALIGNER_MODEL "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/qwen3-forced-aligner-0.6b-f16.gguf")
-    set(_Q3ASR_DEFAULT_TEST_DIARIZATION_SEGMENTATION_GGUF "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/pyannote-segmentation-3.0-fp16.gguf")
-    set(_Q3ASR_DEFAULT_TEST_DIARIZATION_EMBEDDING_GGUF "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/wespeaker-voxceleb-resnet34-LM-f32.gguf")
-    set(_Q3ASR_DEFAULT_TEST_DIARIZATION_SEGMENTATION_PYTORCH_GGUF "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/pyannote-segmentation-3.0-pytorch-f32.gguf")
-    set(_Q3ASR_DEFAULT_TEST_DIARIZATION_EMBEDDING_PYTORCH_GGUF "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/pyannote-wespeaker-voxceleb-resnet34-LM-pytorch-f32.gguf")
+    set(_Q3ASR_DEFAULT_TEST_DIARIZATION_SEGMENTATION_GGUF "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/pyannote-segmentation-3.0-pytorch-f32.gguf")
+    set(_Q3ASR_DEFAULT_TEST_DIARIZATION_EMBEDDING_GGUF "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/pyannote-wespeaker-voxceleb-resnet34-LM-pytorch-f32.gguf")
+    set(_Q3ASR_DEFAULT_TEST_COMMUNITY1_BUNDLE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/models/hf/diarization/pyannote-speaker-diarization-community-1")
+    set(_Q3ASR_LEGACY_TEST_DIARIZATION_SEGMENTATION_GGUF "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/pyannote-segmentation-3.0-fp16.gguf")
+    set(_Q3ASR_LEGACY_TEST_DIARIZATION_EMBEDDING_GGUF "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/wespeaker-voxceleb-resnet34-LM-f32.gguf")
 
     set(
         Q3ASR_TEST_TEXT_MODEL
@@ -156,25 +162,19 @@ if(Q3ASR_BUILD_TESTS)
         Q3ASR_TEST_DIARIZATION_SEGMENTATION_GGUF
         "${_Q3ASR_DEFAULT_TEST_DIARIZATION_SEGMENTATION_GGUF}"
         CACHE FILEPATH
-        "Default diarization segmentation GGUF for inspection tests"
+        "Default official diarization segmentation GGUF for inspection tests"
     )
     set(
         Q3ASR_TEST_DIARIZATION_EMBEDDING_GGUF
         "${_Q3ASR_DEFAULT_TEST_DIARIZATION_EMBEDDING_GGUF}"
         CACHE FILEPATH
-        "Default diarization embedding GGUF for inspection tests"
+        "Default official diarization embedding GGUF for inspection tests"
     )
     set(
-        Q3ASR_TEST_DIARIZATION_SEGMENTATION_PYTORCH_GGUF
-        "${_Q3ASR_DEFAULT_TEST_DIARIZATION_SEGMENTATION_PYTORCH_GGUF}"
-        CACHE FILEPATH
-        "Default diarization PyTorch segmentation GGUF for inspection tests"
-    )
-    set(
-        Q3ASR_TEST_DIARIZATION_EMBEDDING_PYTORCH_GGUF
-        "${_Q3ASR_DEFAULT_TEST_DIARIZATION_EMBEDDING_PYTORCH_GGUF}"
-        CACHE FILEPATH
-        "Default diarization PyTorch embedding GGUF for inspection tests"
+        Q3ASR_TEST_COMMUNITY1_BUNDLE_DIR
+        "${_Q3ASR_DEFAULT_TEST_COMMUNITY1_BUNDLE_DIR}"
+        CACHE PATH
+        "Default Community-1 bundle directory for offline diarization asset tests"
     )
 
     if(NOT EXISTS "${Q3ASR_TEST_TEXT_MODEL}" AND EXISTS "${_Q3ASR_DEFAULT_TEST_TEXT_MODEL}")
@@ -198,11 +198,20 @@ if(Q3ASR_BUILD_TESTS)
     if(NOT EXISTS "${Q3ASR_TEST_DIARIZATION_EMBEDDING_GGUF}" AND EXISTS "${_Q3ASR_DEFAULT_TEST_DIARIZATION_EMBEDDING_GGUF}")
         set(Q3ASR_TEST_DIARIZATION_EMBEDDING_GGUF "${_Q3ASR_DEFAULT_TEST_DIARIZATION_EMBEDDING_GGUF}")
     endif()
-    if(NOT EXISTS "${Q3ASR_TEST_DIARIZATION_SEGMENTATION_PYTORCH_GGUF}" AND EXISTS "${_Q3ASR_DEFAULT_TEST_DIARIZATION_SEGMENTATION_PYTORCH_GGUF}")
-        set(Q3ASR_TEST_DIARIZATION_SEGMENTATION_PYTORCH_GGUF "${_Q3ASR_DEFAULT_TEST_DIARIZATION_SEGMENTATION_PYTORCH_GGUF}")
+    if(NOT EXISTS "${Q3ASR_TEST_COMMUNITY1_BUNDLE_DIR}" AND EXISTS "${_Q3ASR_DEFAULT_TEST_COMMUNITY1_BUNDLE_DIR}")
+        set(Q3ASR_TEST_COMMUNITY1_BUNDLE_DIR "${_Q3ASR_DEFAULT_TEST_COMMUNITY1_BUNDLE_DIR}")
     endif()
-    if(NOT EXISTS "${Q3ASR_TEST_DIARIZATION_EMBEDDING_PYTORCH_GGUF}" AND EXISTS "${_Q3ASR_DEFAULT_TEST_DIARIZATION_EMBEDDING_PYTORCH_GGUF}")
-        set(Q3ASR_TEST_DIARIZATION_EMBEDDING_PYTORCH_GGUF "${_Q3ASR_DEFAULT_TEST_DIARIZATION_EMBEDDING_PYTORCH_GGUF}")
+    if(
+        "${Q3ASR_TEST_DIARIZATION_SEGMENTATION_GGUF}" STREQUAL "${_Q3ASR_LEGACY_TEST_DIARIZATION_SEGMENTATION_GGUF}" AND
+        EXISTS "${_Q3ASR_DEFAULT_TEST_DIARIZATION_SEGMENTATION_GGUF}"
+    )
+        set(Q3ASR_TEST_DIARIZATION_SEGMENTATION_GGUF "${_Q3ASR_DEFAULT_TEST_DIARIZATION_SEGMENTATION_GGUF}" CACHE FILEPATH "Default official diarization segmentation GGUF for inspection tests" FORCE)
+    endif()
+    if(
+        "${Q3ASR_TEST_DIARIZATION_EMBEDDING_GGUF}" STREQUAL "${_Q3ASR_LEGACY_TEST_DIARIZATION_EMBEDDING_GGUF}" AND
+        EXISTS "${_Q3ASR_DEFAULT_TEST_DIARIZATION_EMBEDDING_GGUF}"
+    )
+        set(Q3ASR_TEST_DIARIZATION_EMBEDDING_GGUF "${_Q3ASR_DEFAULT_TEST_DIARIZATION_EMBEDDING_GGUF}" CACHE FILEPATH "Default official diarization embedding GGUF for inspection tests" FORCE)
     endif()
 
     if(
@@ -331,8 +340,8 @@ if(Q3ASR_BUILD_TESTS)
         )
 
         add_test(
-            NAME q3asr-diart-diarizer
-            COMMAND q3asr-diart-diarizer-test
+            NAME q3asr-streaming-diarizer
+            COMMAND q3asr-streaming-diarizer-test
         )
 
         if(
@@ -348,16 +357,18 @@ if(Q3ASR_BUILD_TESTS)
         endif()
 
         if(
-            EXISTS "${Q3ASR_TEST_DIARIZATION_SEGMENTATION_PYTORCH_GGUF}" AND
-            EXISTS "${Q3ASR_TEST_DIARIZATION_EMBEDDING_PYTORCH_GGUF}"
+            EXISTS "${Q3ASR_TEST_COMMUNITY1_BUNDLE_DIR}/config.yaml" AND
+            EXISTS "${Q3ASR_TEST_COMMUNITY1_BUNDLE_DIR}/plda/plda.npz" AND
+            EXISTS "${Q3ASR_TEST_COMMUNITY1_BUNDLE_DIR}/plda/xvec_transform.npz" AND
+            EXISTS "${Q3ASR_TEST_DIARIZATION_SEGMENTATION_GGUF}" AND
+            EXISTS "${Q3ASR_TEST_DIARIZATION_EMBEDDING_GGUF}"
         )
             add_test(
-                NAME q3asr-diarization-gguf-pytorch
-                COMMAND q3asr-diarization-gguf-test
-                    --segmentation-model "${Q3ASR_TEST_DIARIZATION_SEGMENTATION_PYTORCH_GGUF}"
-                    --embedding-model "${Q3ASR_TEST_DIARIZATION_EMBEDDING_PYTORCH_GGUF}"
-                    --segmentation-format pytorch
-                    --embedding-format pytorch
+                NAME q3asr-offline-diarizer
+                COMMAND q3asr-offline-diarizer-test
+                    --community1-bundle-dir "${Q3ASR_TEST_COMMUNITY1_BUNDLE_DIR}"
+                    --segmentation-model "${Q3ASR_TEST_DIARIZATION_SEGMENTATION_GGUF}"
+                    --embedding-model "${Q3ASR_TEST_DIARIZATION_EMBEDDING_GGUF}"
             )
         endif()
     else()
