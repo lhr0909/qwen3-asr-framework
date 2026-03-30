@@ -114,13 +114,13 @@ int main(int argc, char ** argv) {
         argc,
         argv,
         "--segmentation-model",
-        cwd + "/models/gguf/pyannote-segmentation-3.0-pytorch-f32.gguf"
+        cwd + "/models/gguf/pyannote-speaker-diarization-community-1-segmentation-pytorch-f32.gguf"
     );
     assets.embedding_model_path = get_flag(
         argc,
         argv,
         "--embedding-model",
-        cwd + "/models/gguf/pyannote-wespeaker-voxceleb-resnet34-LM-pytorch-f32.gguf"
+        cwd + "/models/gguf/pyannote-speaker-diarization-community-1-embedding-pytorch-f32.gguf"
     );
     assets.clustering_model_path = get_flag(
         argc,
@@ -147,7 +147,7 @@ int main(int argc, char ** argv) {
     ok = ok && approx_equal(diarizer.config().clustering_fa, 0.07f);
     ok = ok && approx_equal(diarizer.config().clustering_fb, 0.8f);
     ok = ok && approx_equal(diarizer.config().min_duration_off, 0.0f);
-    ok = ok && diarizer.segmentation_model().find_tensor("sincnet.conv1d.1.weight") != nullptr;
+    ok = ok && diarizer.segmentation_model().find_tensor("sincnet.wav_norm1d.weight") != nullptr;
     ok = ok && diarizer.embedding_model().find_tensor("resnet.conv1.weight") != nullptr;
     ok = ok && diarizer.clustering_model().find_tensor("xvec.lda") != nullptr;
     ok = ok && diarizer.native_clustering_available();

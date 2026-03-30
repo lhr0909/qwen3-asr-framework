@@ -147,33 +147,32 @@ Useful CMake options:
 
 ## Experimental Diarization Model Conversion
 
-You can pull the official pyannote checkpoints from Hugging Face and package them into GGUF for local inspection.
+You can pull the official Community-1 bundle from Hugging Face and package its segmentation, embedding, and PLDA assets into GGUF for local inspection.
 
 ```sh
-uvx hf download pyannote/segmentation-3.0 \
-  --local-dir models/hf/diarization/pyannote-segmentation-3.0
-
-uvx hf download pyannote/wespeaker-voxceleb-resnet34-LM \
-  --local-dir models/hf/diarization/pyannote-wespeaker-voxceleb-resnet34-LM
+uvx hf download pyannote/speaker-diarization-community-1 \
+  --local-dir models/hf/diarization/pyannote-speaker-diarization-community-1
 
 uvx --with torch,numpy,pyyaml,torchaudio,pyannote.audio==3.1.1 python scripts/convert_diarization_pytorch_to_gguf.py \
-  --input-dir models/hf/diarization/pyannote-segmentation-3.0 \
-  --output models/gguf/pyannote-segmentation-3.0-pytorch-f32.gguf \
+  --input-dir models/hf/diarization/pyannote-speaker-diarization-community-1/segmentation \
+  --output models/gguf/pyannote-speaker-diarization-community-1-segmentation-pytorch-f32.gguf \
   --kind speaker-segmentation \
-  --source-repo pyannote/segmentation-3.0
+  --source-repo pyannote/speaker-diarization-community-1 \
+  --source-file segmentation/pytorch_model.bin
 
 uvx --with torch,numpy,pyyaml,torchaudio,pyannote.audio==3.1.1 python scripts/convert_diarization_pytorch_to_gguf.py \
-  --input-dir models/hf/diarization/pyannote-wespeaker-voxceleb-resnet34-LM \
-  --output models/gguf/pyannote-wespeaker-voxceleb-resnet34-LM-pytorch-f32.gguf \
+  --input-dir models/hf/diarization/pyannote-speaker-diarization-community-1/embedding \
+  --output models/gguf/pyannote-speaker-diarization-community-1-embedding-pytorch-f32.gguf \
   --kind speaker-embedding \
-  --source-repo pyannote/wespeaker-voxceleb-resnet34-LM
+  --source-repo pyannote/speaker-diarization-community-1 \
+  --source-file embedding/pytorch_model.bin
 
 uvx --with numpy,scipy,pyyaml python scripts/convert_community1_plda_to_gguf.py \
   --bundle-dir models/hf/diarization/pyannote-speaker-diarization-community-1 \
   --output models/gguf/pyannote-speaker-diarization-community-1-plda-f32.gguf
 ```
 
-If those PyTorch-derived GGUFs exist locally, the repo registers `q3asr-diarization-gguf` in `ctest` and validates the metadata/tensor layout through the C++ loader.
+If those Community-1-derived GGUFs exist locally, the repo registers `q3asr-diarization-gguf` in `ctest` and validates the metadata/tensor layout through the C++ loader.
 
 ## Reference Pyannote Diarization
 
@@ -186,7 +185,7 @@ The repo currently has three diarization-oriented surfaces:
   - expects external segmentation scores and speaker embeddings
 - `src/offline_diarizer.cpp`
   - C++ Community-1 offline clustering stage
-  - loads the official segmentation and embedding GGUFs plus a converted Community-1 PLDA GGUF
+  - loads the bundle-derived Community-1 segmentation and embedding GGUFs plus a converted Community-1 PLDA GGUF
   - runs VBx-style offline clustering for precomputed segmentations and speaker embeddings
   - still does not execute raw-audio diarization natively yet
 

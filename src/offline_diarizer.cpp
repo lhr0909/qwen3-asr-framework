@@ -858,18 +858,20 @@ bool OfflineDiarizer::load_community1(const offline_diarizer_assets & assets) {
     if (
         segmentation_model_.serialization_format != "pytorch" ||
         segmentation_model_.kind != "speaker-segmentation" ||
-        segmentation_model_.source_repo != "pyannote/segmentation-3.0"
+        segmentation_model_.source_repo != "pyannote/speaker-diarization-community-1" ||
+        segmentation_model_.source_file != "segmentation/pytorch_model.bin"
     ) {
-        error_msg_ = "Community-1 offline diarizer requires the official pyannote segmentation GGUF";
+        error_msg_ = "Community-1 offline diarizer requires the bundle-derived Community-1 segmentation GGUF";
         return false;
     }
 
     if (
         embedding_model_.serialization_format != "pytorch" ||
         embedding_model_.kind != "speaker-embedding" ||
-        embedding_model_.source_repo != "pyannote/wespeaker-voxceleb-resnet34-LM"
+        embedding_model_.source_repo != "pyannote/speaker-diarization-community-1" ||
+        embedding_model_.source_file != "embedding/pytorch_model.bin"
     ) {
-        error_msg_ = "Community-1 offline diarizer requires the official pyannote wespeaker GGUF";
+        error_msg_ = "Community-1 offline diarizer requires the bundle-derived Community-1 embedding GGUF";
         return false;
     }
 

@@ -1,5 +1,55 @@
 # Q3ASR Worklog
 
+## 2026-03-30
+
+### Community-1 Submodel GGUF Switch
+
+- Converted the segmentation and embedding submodels directly from the official `pyannote/speaker-diarization-community-1` bundle:
+  - `models/hf/diarization/pyannote-speaker-diarization-community-1/segmentation/pytorch_model.bin`
+  - `models/hf/diarization/pyannote-speaker-diarization-community-1/embedding/pytorch_model.bin`
+- Generated new canonical local GGUF artifacts:
+  - `models/gguf/pyannote-speaker-diarization-community-1-segmentation-pytorch-f32.gguf`
+  - `models/gguf/pyannote-speaker-diarization-community-1-embedding-pytorch-f32.gguf`
+- Switched the C++ diarization defaults and validation surfaces over to those bundle-derived Community-1 submodels:
+  - `CMakeLists.txt`
+  - `tests/diarization_gguf_test.cpp`
+  - `tests/offline_diarizer_test.cpp`
+  - `src/offline_diarizer.cpp`
+  - `README.md`
+- Tightened `offline_diarizer` asset validation so it now requires:
+  - `diarization.source_repo = pyannote/speaker-diarization-community-1`
+  - `diarization.source_file = segmentation/pytorch_model.bin` for segmentation
+  - `diarization.source_file = embedding/pytorch_model.bin` for embedding
+
+### Community-1 Submodel Validation
+
+- Converted the Community-1 segmentation submodel locally:
+  - `uvx --with torch,numpy,pyyaml,torchaudio,pyannote.audio==3.1.1 python scripts/convert_diarization_pytorch_to_gguf.py --input-dir models/hf/diarization/pyannote-speaker-diarization-community-1/segmentation --output models/gguf/pyannote-speaker-diarization-community-1-segmentation-pytorch-f32.gguf --kind speaker-segmentation --source-repo pyannote/speaker-diarization-community-1 --source-file segmentation/pytorch_model.bin`
+  - observed: `tensor_count=54`, `top_level_keys=5`
+- Converted the Community-1 embedding submodel locally:
+  - `uvx --with torch,numpy,pyyaml,torchaudio,pyannote.audio==3.1.1 python scripts/convert_diarization_pytorch_to_gguf.py --input-dir models/hf/diarization/pyannote-speaker-diarization-community-1/embedding --output models/gguf/pyannote-speaker-diarization-community-1-embedding-pytorch-f32.gguf --kind speaker-embedding --source-repo pyannote/speaker-diarization-community-1 --source-file embedding/pytorch_model.bin`
+  - observed: `tensor_count=218`, `top_level_keys=3`
+- Rebuilt successfully after switching the defaults:
+  - `cmake -S . -B build`
+  - `cmake --build build -j`
+- Re-ran the diarization-focused C++ tests:
+  - `ctest --test-dir build --output-on-failure -R 'q3asr-(diarization-gguf|offline-diarizer|streaming-diarizer)'`
+- Re-ran the full test suite:
+  - `ctest --test-dir build --output-on-failure`
+
+### Community-1 Submodel Gotchas
+
+- The bundle-derived checkpoints do not carry the same sidecar files as the older standalone model repos:
+  - `diarization.config_json`
+  - `diarization.preprocessor_json`
+  - `diarization.config_yaml`
+  - `diarization.hparams_yaml`
+  - `diarization.hydra_yaml`
+  - `diarization.overrides_yaml`
+  are absent in the resulting GGUF metadata and load as empty strings on the C++ side.
+- The bundle-derived checkpoints report `pyannote.audio = 4.0.0` in the checkpoint metadata, and the optional stored `torch` version field is absent.
+- The segmentation checkpoint tensor layout is still compatible with the loader expectations, but the old test probe tensor `sincnet.conv1d.1.weight` is not present in this bundle-derived artifact. The stable tensor probe is `sincnet.wav_norm1d.weight`.
+
 ## 2026-03-29
 
 ### Native Offline Clustering Bring-Up
@@ -40,7 +90,7 @@
   - `cmake -S . -B build`
   - `cmake --build build -j`
 - Verified the focused diarization tests:
-  - `./build/q3asr-offline-diarizer-test --community1-bundle-dir models/hf/diarization/pyannote-speaker-diarization-community-1 --segmentation-model models/gguf/pyannote-segmentation-3.0-pytorch-f32.gguf --embedding-model models/gguf/pyannote-wespeaker-voxceleb-resnet34-LM-pytorch-f32.gguf --clustering-model models/gguf/pyannote-speaker-diarization-community-1-plda-f32.gguf --reference-fixture testdata/diarization/community1-offline-20s-long-audio.json`
+  - `./build/q3asr-offline-diarizer-test --community1-bundle-dir models/hf/diarization/pyannote-speaker-diarization-community-1 --segmentation-model models/gguf/pyannote-speaker-diarization-community-1-segmentation-pytorch-f32.gguf --embedding-model models/gguf/pyannote-speaker-diarization-community-1-embedding-pytorch-f32.gguf --clustering-model models/gguf/pyannote-speaker-diarization-community-1-plda-f32.gguf --reference-fixture tests/data/community1-offline-20s-long-audio.json`
     - observed: `offline_diarizer_test passed`
   - `ctest --test-dir build --output-on-failure -R 'q3asr-(offline-diarizer|diarization-gguf|streaming-diarizer)'`
     - observed: `3/3` passing

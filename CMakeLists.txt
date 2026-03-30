@@ -127,11 +127,13 @@ if(Q3ASR_BUILD_TESTS)
     set(_Q3ASR_DEFAULT_TEST_AUDIO "${CMAKE_CURRENT_SOURCE_DIR}/testdata/asr_zh.wav")
     set(_Q3ASR_DEFAULT_TEST_AUDIO_ENGLISH "${CMAKE_CURRENT_SOURCE_DIR}/testdata/q3asr-input.wav")
     set(_Q3ASR_DEFAULT_TEST_ALIGNER_MODEL "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/qwen3-forced-aligner-0.6b-f16.gguf")
-    set(_Q3ASR_DEFAULT_TEST_DIARIZATION_SEGMENTATION_GGUF "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/pyannote-segmentation-3.0-pytorch-f32.gguf")
-    set(_Q3ASR_DEFAULT_TEST_DIARIZATION_EMBEDDING_GGUF "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/pyannote-wespeaker-voxceleb-resnet34-LM-pytorch-f32.gguf")
+    set(_Q3ASR_DEFAULT_TEST_DIARIZATION_SEGMENTATION_GGUF "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/pyannote-speaker-diarization-community-1-segmentation-pytorch-f32.gguf")
+    set(_Q3ASR_DEFAULT_TEST_DIARIZATION_EMBEDDING_GGUF "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/pyannote-speaker-diarization-community-1-embedding-pytorch-f32.gguf")
     set(_Q3ASR_DEFAULT_TEST_DIARIZATION_CLUSTERING_GGUF "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/pyannote-speaker-diarization-community-1-plda-f32.gguf")
     set(_Q3ASR_DEFAULT_TEST_COMMUNITY1_BUNDLE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/models/hf/diarization/pyannote-speaker-diarization-community-1")
     set(_Q3ASR_DEFAULT_TEST_COMMUNITY1_FIXTURE "${CMAKE_CURRENT_SOURCE_DIR}/tests/data/community1-offline-20s-long-audio.json")
+    set(_Q3ASR_PREVIOUS_TEST_DIARIZATION_SEGMENTATION_GGUF "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/pyannote-segmentation-3.0-pytorch-f32.gguf")
+    set(_Q3ASR_PREVIOUS_TEST_DIARIZATION_EMBEDDING_GGUF "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/pyannote-wespeaker-voxceleb-resnet34-LM-pytorch-f32.gguf")
     set(_Q3ASR_LEGACY_TEST_DIARIZATION_SEGMENTATION_GGUF "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/pyannote-segmentation-3.0-fp16.gguf")
     set(_Q3ASR_LEGACY_TEST_DIARIZATION_EMBEDDING_GGUF "${CMAKE_CURRENT_SOURCE_DIR}/models/gguf/wespeaker-voxceleb-resnet34-LM-f32.gguf")
 
@@ -219,6 +221,18 @@ if(Q3ASR_BUILD_TESTS)
     endif()
     if(NOT EXISTS "${Q3ASR_TEST_COMMUNITY1_BUNDLE_DIR}" AND EXISTS "${_Q3ASR_DEFAULT_TEST_COMMUNITY1_BUNDLE_DIR}")
         set(Q3ASR_TEST_COMMUNITY1_BUNDLE_DIR "${_Q3ASR_DEFAULT_TEST_COMMUNITY1_BUNDLE_DIR}")
+    endif()
+    if(
+        "${Q3ASR_TEST_DIARIZATION_SEGMENTATION_GGUF}" STREQUAL "${_Q3ASR_PREVIOUS_TEST_DIARIZATION_SEGMENTATION_GGUF}" AND
+        EXISTS "${_Q3ASR_DEFAULT_TEST_DIARIZATION_SEGMENTATION_GGUF}"
+    )
+        set(Q3ASR_TEST_DIARIZATION_SEGMENTATION_GGUF "${_Q3ASR_DEFAULT_TEST_DIARIZATION_SEGMENTATION_GGUF}" CACHE FILEPATH "Default official diarization segmentation GGUF for inspection tests" FORCE)
+    endif()
+    if(
+        "${Q3ASR_TEST_DIARIZATION_EMBEDDING_GGUF}" STREQUAL "${_Q3ASR_PREVIOUS_TEST_DIARIZATION_EMBEDDING_GGUF}" AND
+        EXISTS "${_Q3ASR_DEFAULT_TEST_DIARIZATION_EMBEDDING_GGUF}"
+    )
+        set(Q3ASR_TEST_DIARIZATION_EMBEDDING_GGUF "${_Q3ASR_DEFAULT_TEST_DIARIZATION_EMBEDDING_GGUF}" CACHE FILEPATH "Default official diarization embedding GGUF for inspection tests" FORCE)
     endif()
     if(
         "${Q3ASR_TEST_DIARIZATION_SEGMENTATION_GGUF}" STREQUAL "${_Q3ASR_LEGACY_TEST_DIARIZATION_SEGMENTATION_GGUF}" AND
