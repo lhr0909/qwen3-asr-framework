@@ -368,66 +368,46 @@ bool load_mel_filters_npy(const std::string& path, MelFilters& filters) {
 // Mel Filterbank Generation
 // ============================================================================
 
-static float hz_to_mel(float hz) {
-    return 2595.0f * log10f(1.0f + hz / 700.0f);
+static double hz_to_mel(double hz) {
+    if (hz < 1000.0) {
+        return 3.0 * hz / 200.0;
+    }
+    return 15.0 + std::log(hz / 1000.0) * (27.0 / std::log(6.4));
 }
 
-static float mel_to_hz(float mel) {
-    return 700.0f * (powf(10.0f, mel / 2595.0f) - 1.0f);
+static double mel_to_hz(double mel) {
+    if (mel < 15.0) {
+        return 200.0 * mel / 3.0;
+    }
+    return 1000.0 * std::exp((std::log(6.4) / 27.0) * (mel - 15.0));
 }
 
 void generate_mel_filters(MelFilters& filters, int n_mels, int n_fft, int sample_rate) {
-    int n_fft_bins = 1 + n_fft / 2;  // 201
-    float fmax = sample_rate / 2.0f;  // Nyquist frequency
-    float fmin = 0.0f;
+    const int n_fft_bins = 1 + n_fft / 2;
+    const double fmax = sample_rate / 2.0;
 
     filters.n_mel = n_mels;
     filters.n_fft = n_fft_bins;
-    filters.data.resize(n_mels * n_fft_bins, 0.0f);
+    filters.data.assign(static_cast<size_t>(n_mels) * n_fft_bins, 0.0f);
 
-    float mel_min = hz_to_mel(fmin);
-    float mel_max = hz_to_mel(fmax);
-
-    // Create n_mels + 2 equally spaced points in mel scale
-    std::vector<float> mel_points(n_mels + 2);
+    const double mel_max = hz_to_mel(fmax);
+    std::vector<double> hz_points(n_mels + 2);
     for (int i = 0; i < n_mels + 2; i++) {
-        mel_points[i] = mel_min + (mel_max - mel_min) * i / (n_mels + 1);
+        hz_points[i] = mel_to_hz(mel_max * i / (n_mels + 1));
     }
 
-    // Convert back to Hz
-    std::vector<float> hz_points(n_mels + 2);
-    for (int i = 0; i < n_mels + 2; i++) {
-        hz_points[i] = mel_to_hz(mel_points[i]);
-    }
-
-    // Convert to FFT bin indices
-    std::vector<float> bin_points(n_mels + 2);
-    for (int i = 0; i < n_mels + 2; i++) {
-        bin_points[i] = (n_fft + 1) * hz_points[i] / sample_rate;
-    }
-
-    // Create triangular filters
     for (int m = 0; m < n_mels; m++) {
-        float left = bin_points[m];
-        float center = bin_points[m + 1];
-        float right = bin_points[m + 2];
+        const double left = hz_points[m];
+        const double center = hz_points[m + 1];
+        const double right = hz_points[m + 2];
+        const double enorm = 2.0 / (right - left);
 
         for (int k = 0; k < n_fft_bins; k++) {
-            float weight = 0.0f;
-            if (k >= left && k <= center) {
-                weight = (k - left) / (center - left);
-            } else if (k >= center && k <= right) {
-                weight = (right - k) / (right - center);
-            }
-            filters.data[m * n_fft_bins + k] = weight;
-        }
-    }
-
-    // Normalize filters (slaney normalization)
-    for (int m = 0; m < n_mels; m++) {
-        float enorm = 2.0f / (hz_points[m + 2] - hz_points[m]);
-        for (int k = 0; k < n_fft_bins; k++) {
-            filters.data[m * n_fft_bins + k] *= enorm;
+            const double freq = fmax * k / (n_fft_bins - 1);
+            const double down = (freq - left) / (center - left);
+            const double up = (right - freq) / (right - center);
+            const double weight = std::max(0.0, std::min(down, up));
+            filters.data[static_cast<size_t>(m) * n_fft_bins + k] = static_cast<float>(weight * enorm);
         }
     }
 }
@@ -531,7 +511,7 @@ bool log_mel_spectrogram(const float* samples, int n_samples,
     std::reverse_copy(samples + 1, samples + 1 + stage_2_pad, samples_padded.begin());
 
     const int total_frames = (static_cast<int>(samples_padded.size()) - frame_size) / frame_step + 1;
-    const int n_real_frames = std::min(n_samples_orig / frame_step + 1, total_frames);
+    const int n_real_frames = std::min(std::max(n_samples_orig / frame_step, 1), total_frames);
 
     MelSpectrogram full_mel;
     full_mel.n_mel = filters.n_mel;
@@ -588,9 +568,10 @@ bool log_mel_spectrogram(const float* samples, int n_samples,
     }
 
     double mmax = -1e20;
-    for (float value : full_mel.data) {
-        if (value > mmax) {
-            mmax = value;
+    for (int j = 0; j < full_mel.n_mel; ++j) {
+        const float * row = full_mel.data.data() + static_cast<size_t>(j) * full_mel.n_len;
+        for (int i = 0; i < n_real_frames; ++i) {
+            mmax = std::max(mmax, static_cast<double>(row[i]));
         }
     }
 

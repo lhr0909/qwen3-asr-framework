@@ -38,7 +38,7 @@ bool load_wav(const std::string& path, std::vector<float>& samples, int& sample_
 bool load_mel_filters_npy(const std::string& path, MelFilters& filters);
 
 // Generate mel filterbank programmatically
-// Uses HTK mel scale: mel = 2595 * log10(1 + f/700)
+// Slaney mel scale and norm, matching transformers WhisperFeatureExtractor
 void generate_mel_filters(MelFilters& filters, int n_mels = QWEN_N_MELS, 
                           int n_fft = QWEN_N_FFT, int sample_rate = QWEN_SAMPLE_RATE);
 
