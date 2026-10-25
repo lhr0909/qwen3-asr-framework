@@ -1,5 +1,26 @@
 # Q3ASR Worklog
 
+## 2026-10-25 Mel front end parity (TM-40)
+
+### What changed
+
+- `generate_mel_filters` now ports `transformers.audio_utils.mel_filter_bank` with `mel_scale="slaney"`, `norm="slaney"` (linear-frequency triangles). It was HTK scale with bin-index edges.
+- `log_mel_spectrogram` emits `n_samples / hop` frames (was one more) and takes the `max - 8` clamp over real frames only.
+
+### Validation
+
+- Log-mel against `WhisperFeatureExtractor` on 5 public TVSpeech clips: max abs 1.7-1.96 (mean 0.15) before, 0.0018 max after; frame counts now equal.
+- Typhoon 0.6B Q8_0 CER: TVSpeech 50 clips 8.63 -> 6.25 (transformers bf16 6.29); FLEURS-th 30 clips 13.12 -> 11.51 (bf16 11.67). Qwen3-ASR-0.6B Q8_0 TVSpeech 15.55 -> 12.13 (qwen-asr 12.97). Harness: TranscribeMemos `research/offline-asr/parity/`.
+
+### Remaining work
+
+- Stitched long-audio mode still drops text on languages the aligner lacks (Thai); prefer one-shot VAD chunks.
+- Diff upstream llama.cpp's own Qwen3-ASR support against this path.
+
+### Gotchas
+
+- The `.npy` filter path is still supported, but generated filters are now the reference ones; do not reintroduce HTK.
+
 ## 2026-03-30
 
 ### Community-1 Submodel GGUF Switch
