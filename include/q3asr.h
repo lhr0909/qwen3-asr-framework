@@ -48,7 +48,18 @@ typedef struct {
     void * raw_text_callback_user_data;
     q3asr_progress_callback progress_callback;
     void * progress_callback_user_data;
+    /* Loop guard (TM-42). Each 0 turns its part off.
+     * repetition_fix_threshold: the reference's detect_and_fix_repetitions on each decoded chunk (default 20).
+     * max_tokens_per_second: per chunk, max_tokens is capped at 16 + ceil(rate * chunk seconds).
+     * loop_stop_min_repeats / loop_stop_min_tokens: stop decoding once the output ends in a block (up to 64 tokens)
+     * repeated at least min_repeats times over at least min_tokens tokens, and keep one copy of the block. */
+    int repetition_fix_threshold;
+    float max_tokens_per_second;
+    int loop_stop_min_repeats;
+    int loop_stop_min_tokens;
 } q3asr_transcribe_params;
+
+#define Q3ASR_HAS_LOOP_GUARD 1
 
 typedef struct {
     char * raw_text;

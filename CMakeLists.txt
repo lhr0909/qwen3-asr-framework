@@ -105,6 +105,9 @@ if(Q3ASR_BUILD_TESTS)
     target_link_libraries(q3asr-normalization-test PRIVATE q3asr)
     target_include_directories(q3asr-normalization-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
+    add_executable(q3asr-repetition-test tests/repetition_test.cpp)
+    target_include_directories(q3asr-repetition-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+
     add_executable(q3asr-streaming-diarizer-test tests/streaming_diarizer_test.cpp)
     target_link_libraries(q3asr-streaming-diarizer-test PRIVATE q3asr)
     target_include_directories(q3asr-streaming-diarizer-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -370,6 +373,11 @@ if(Q3ASR_BUILD_TESTS)
         add_test(
             NAME q3asr-normalization
             COMMAND q3asr-normalization-test
+        )
+
+        add_test(
+            NAME q3asr-repetition
+            COMMAND q3asr-repetition-test
         )
 
         add_test(
