@@ -19,6 +19,8 @@ struct decoder_load_params {
 
 struct decoder_transcribe_params {
     int max_tokens = 256;
+    int loop_stop_min_repeats = 0;
+    int loop_stop_min_tokens = 0;
     float temperature = 0.0f;
     int n_threads = 4;
     int n_batch = 512;

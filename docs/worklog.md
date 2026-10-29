@@ -1,5 +1,40 @@
 # Q3ASR Worklog
 
+## 2026-10-29 Decoder loop guard (TM-42)
+
+### What changed
+
+- `src/repetition.h` (header-only, so builds that list sources need no change) ports the reference's
+  `detect_and_fix_repetitions` (`qwen_asr/inference/utils.py` @c17a131), on code points like Python's str. Each
+  decoded chunk's text goes through it, controlled by `q3asr_transcribe_params.repetition_fix_threshold` (default 20,
+  0 = off). The Python reference and transformers' `Qwen3ASRProcessor.decode` both apply this step. q3asr didn't.
+- Opt-in `max_tokens_per_second`: per chunk, `max_tokens` is capped at `16 + ceil(rate * seconds)`.
+- Opt-in `loop_stop_min_repeats` / `loop_stop_min_tokens`: decoding stops when the output ends in a block of up to 64
+  tokens repeated that often over that many tokens, and the raw text and token spans are trimmed to one copy.
+- The new fields are appended to `q3asr_transcribe_params`, and `Q3ASR_HAS_LOOP_GUARD` marks the API. When the fix
+  changes a chunk's text, that chunk's `text_token_spans` are dropped, because they index the unfixed text.
+
+### Validation
+
+- Port vs transformers' Python on 3000 fuzzed strings (Thai, CJK, emoji, thresholds 2-20): 0 mismatches.
+  `tests/repetition_test.cpp` holds vectors from the Python reference.
+- ctest 11/11 (smoke, the English/streaming/context/long regressions, aligner, normalization, repetition).
+- Typhoon 0.6B Q8_0, guard off vs on (fix 20, rate 15, stop 4/24): TVSpeech 50 clips 6.25 / 6.25 (identical output),
+  FLEURS-th 30 clips 11.51 / 11.51.
+- Private customer Thai set (TranscribeMemos TM-42, 40 files, 16 h, pyannote chunks), CER vs Soniox: Q8_0 55.1 ->
+  28.3, Q4_K_M 61.7 -> 29.1, against transformers bf16 29.3. Loop files 21-22/40 -> 0-1.
+
+### Remaining work
+
+- Not merged. The app must pin a commit with both this and the mel fix, and opt into the cap (15 tokens/s) and the
+  stop (4 repeats, 24 tokens).
+- Not re-measured on a phone.
+
+### Gotchas
+
+- Public read-speech sets never loop. Loops appear only on long, noisy, code-switched audio, so a parity check on
+  public clips can't validate a decode change on its own.
+
 ## 2026-10-25 Mel front end parity (TM-40)
 
 ### What changed
