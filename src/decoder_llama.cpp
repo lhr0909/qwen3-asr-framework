@@ -1,7 +1,9 @@
 #include "decoder_llama.h"
+#include "repetition.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -218,6 +220,8 @@ bool LlamaDecoder::decode_audio_embeddings(
         return false;
     }
 
+    std::vector<llama_token> generated;
+    std::vector<size_t> generated_byte_starts;
     for (int i = 0; i < params.max_tokens; ++i) {
         float token_logprob = 0.0f;
         const llama_token token = sample_token(ctx, params.temperature, &token_logprob);
@@ -230,6 +234,16 @@ bool LlamaDecoder::decode_audio_embeddings(
         raw_text += piece;
         if (out_token_spans != nullptr) {
             out_token_spans->push_back({byte_start, raw_text.size(), token_logprob});
+        }
+        generated.push_back(token);
+        generated_byte_starts.push_back(byte_start);
+        const size_t keep = loop_stop_keep(generated, params.loop_stop_min_repeats, params.loop_stop_min_tokens);
+        if (keep < generated.size()) {
+            raw_text.resize(generated_byte_starts[keep]);
+            if (out_token_spans != nullptr) {
+                out_token_spans->resize(out_token_spans->size() - (generated.size() - keep));
+            }
+            break;
         }
         if (params.raw_text_callback) {
             if (is_valid_utf8(raw_text) && !contains_replacement_char(raw_text)) {

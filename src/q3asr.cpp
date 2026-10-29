@@ -4,6 +4,7 @@
 #include "decoder_llama.h"
 #include "forced_aligner.h"
 #include "mel_spectrogram.h"
+#include "repetition.h"
 
 #include <algorithm>
 #include <cctype>
@@ -195,6 +196,13 @@ private:
 
         decoder_transcribe_params decoder_params;
         decoder_params.max_tokens = params.max_tokens;
+        if (params.max_tokens_per_second > 0.0f) {
+            const float seconds = static_cast<float>(n_samples) / static_cast<float>(QWEN_SAMPLE_RATE);
+            const int cap = 16 + static_cast<int>(std::ceil(params.max_tokens_per_second * seconds));
+            decoder_params.max_tokens = std::min(decoder_params.max_tokens, cap);
+        }
+        decoder_params.loop_stop_min_repeats = params.loop_stop_min_repeats;
+        decoder_params.loop_stop_min_tokens = params.loop_stop_min_tokens;
         decoder_params.temperature = params.temperature;
         decoder_params.n_threads = params_.n_threads;
         decoder_params.n_batch = params_.n_batch;
@@ -211,8 +219,11 @@ private:
 
         const auto parsed = parse_asr_output(result.raw_text, decoder_params.language_hint);
         result.language = parsed.language;
-        result.text = parsed.text;
+        result.text = detect_and_fix_repetitions(parsed.text, params.repetition_fix_threshold);
         result.text_token_spans.clear();
+        if (result.text != parsed.text) {
+            return true;
+        }
         result.text_token_spans.reserve(raw_token_spans.size());
         for (const decoder_token_span & span : raw_token_spans) {
             if (span.byte_end <= parsed.text_byte_start) {
@@ -927,6 +938,10 @@ q3asr_transcribe_params q3asr_transcribe_default_params(void) {
     params.raw_text_callback_user_data = nullptr;
     params.progress_callback = nullptr;
     params.progress_callback_user_data = nullptr;
+    params.repetition_fix_threshold = 20;
+    params.max_tokens_per_second = 0.0f;
+    params.loop_stop_min_repeats = 0;
+    params.loop_stop_min_tokens = 0;
     return params;
 }
 
