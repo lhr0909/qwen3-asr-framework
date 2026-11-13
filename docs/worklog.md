@@ -21,7 +21,7 @@
 - ctest 11/11 (smoke, the English/streaming/context/long regressions, aligner, normalization, repetition).
 - Typhoon 0.6B Q8_0, guard off vs on (fix 20, rate 15, stop 4/24): TVSpeech 50 clips 6.25 / 6.25 (identical output),
   FLEURS-th 30 clips 11.51 / 11.51.
-- Private customer Thai set (TranscribeMemos TM-42, 40 files, 16 h, pyannote chunks), CER vs Soniox: Q8_0 55.1 ->
+- Held-out long-form Thai set (TranscribeMemos TM-42, 40 files, 16 h, pyannote chunks), CER vs Soniox: Q8_0 55.1 ->
   28.3, Q4_K_M 61.7 -> 29.1, against transformers bf16 29.3. Loop files 21-22/40 -> 0-1.
 
 ### Remaining work
